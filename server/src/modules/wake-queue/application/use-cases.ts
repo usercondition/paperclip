@@ -338,7 +338,7 @@ async function promoteDeferredWake(
   // undo side effects the finishing run already performed.
   if (
     enrolledManagedRepair &&
-    (run.status === "cancelled" || currentIssue.status === "done" || currentIssue.status === "cancelled")
+    (run.status === "cancelled" || run.status === "interrupted" || currentIssue.status === "done" || currentIssue.status === "cancelled")
   ) {
     await ports.transaction.cancelDeferredWake({
       companyId: run.companyId,
@@ -667,6 +667,16 @@ async function runReleaseRecoveryTail(
     );
 
   if (run.conversationContinuation && ["failed", "timed_out", "interrupted"].includes(run.status)) {
+    const enrolledInterrupted = run.status === "interrupted" && await transaction.isEnrolledManagedRepair({
+      companyId: run.companyId,
+      issueId: issue.id,
+    });
+    // An interrupted managed repair needs a new board grant. Do not ask the
+    // host to schedule a conversation successor, and do not fall through into
+    // another recovery run for the grant that just ended.
+    if (enrolledInterrupted) {
+      return { outcome: { kind: "released" }, postCommitEffects };
+    }
     // Do not create an uncounted immediate successor inside the issue lock.
     // The host's idempotent scheduler claims it after commit with the same
     // retry counter used by restart and process-loss recovery.

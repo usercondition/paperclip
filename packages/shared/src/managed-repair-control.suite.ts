@@ -11,6 +11,7 @@ import {
   decideManagedRepairIssueMutation,
   decideStageTransition,
   decideVerdictRecord,
+  managedRepairInterruptStopsAutomaticResume,
   DEFAULT_MANAGED_REPAIR_IDLE_MS,
   EXPLICIT_BOARD_AUTHORITY_SOURCE,
   explicitBoardAuthorityAccepted,
@@ -403,6 +404,53 @@ test("applied needs saved evidence and agents cannot self-approve", () => {
     source: "independent_review",
   });
   assert.equal(agent.allowed, false);
+});
+
+test("an interrupted grant stops, and a null user owner can take the real board verdict", () => {
+  const live = authorized();
+  const stopped = managedRepairInterruptStopsAutomaticResume(live, NOW);
+  assert.equal(stopped.liveHold, true);
+  assert.equal(stopped.authorizationSource, null);
+  assert.equal(stopped.authorizationGrantedByUserId, null);
+  assert.deepEqual(stopped.authorizedScope, []);
+  assert.equal(stopped.dispatchHalted, false);
+  assert.equal(stopped.dispatchFailureCount, 0);
+  assert.equal(stopped.authorizationVersion, live.authorizationVersion);
+
+  const saved = {
+    savedResultVersion: "result-v2",
+    savedResultEvidenceRef: `sha256:${"ab".repeat(32)}`,
+  };
+  const verdict = {
+    outcome: "PASS" as const,
+    artifactVersion: "result-v2",
+    kind: "qa" as const,
+    source: "independent_review" as const,
+  };
+  const agentOwned = decideVerdictRecord(authorized({
+    ownerUserId: null,
+    ownerAgentId: "agent-1",
+    ...saved,
+  }), {
+    attempt: boardAttempt({ actorUserId: "miguel" }),
+    outcome: verdict.outcome,
+    artifactVersion: verdict.artifactVersion,
+    kind: verdict.kind,
+    source: verdict.source,
+  });
+  assert.equal(agentOwned.allowed, true);
+  const ownerDeadlock = decideVerdictRecord(authorized({
+    ownerUserId: "miguel",
+    ...saved,
+  }), {
+    attempt: boardAttempt({ actorUserId: "miguel" }),
+    outcome: verdict.outcome,
+    artifactVersion: verdict.artifactVersion,
+    kind: verdict.kind,
+    source: verdict.source,
+  });
+  assert.equal(ownerDeadlock.allowed, false);
+  assert.equal(ownerDeadlock.code, "managed_repair_self_approval");
 });
 
 test("idle detection uses the configured 20 minute threshold and the same hold gate", () => {

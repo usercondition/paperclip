@@ -13,6 +13,7 @@ import {
 import {
   admitManagedRepairWake,
   applyDispatchFailure,
+  managedRepairInterruptStopsAutomaticResume,
   classifyManagedRepairWakeSource,
   decideAuthorityGrant,
   explicitBoardAuthorityAccepted,
@@ -422,6 +423,35 @@ export async function noteManagedRepairRunFailure(
       updatedAt: new Date(nextRepair.updatedAt),
     }).where(eq(issueManagedRepairs.id, nextRepair.id));
     return { repair: nextRepair, claim: null, halted };
+  });
+}
+
+export async function noteManagedRepairRunInterruption(
+  dbOrTx: Db,
+  run: { id: string; companyId: string; issueId?: string | null; contextSnapshot: unknown },
+) {
+  const snapshot = run.contextSnapshot && typeof run.contextSnapshot === "object"
+    ? run.contextSnapshot as Record<string, unknown>
+    : {};
+  const issueId = run.issueId ?? (typeof snapshot.issueId === "string" ? snapshot.issueId : null);
+  if (!issueId) return null;
+  return inManagedRepairTransaction(dbOrTx, async (tx) => {
+    const [repairRow] = await tx
+      .select()
+      .from(issueManagedRepairs)
+      .where(and(eq(issueManagedRepairs.companyId, run.companyId), eq(issueManagedRepairs.issueId, issueId)))
+      .limit(1)
+      .for("update");
+    if (!repairRow?.enrolled) return null;
+    const repair = managedRepairInterruptStopsAutomaticResume(mapRepair(repairRow));
+    await tx.update(issueManagedRepairs).set({
+      authorizationSource: null,
+      authorizationGrantedByUserId: null,
+      authorizedScope: [],
+      liveHold: true,
+      updatedAt: new Date(repair.updatedAt),
+    }).where(eq(issueManagedRepairs.id, repair.id));
+    return repair;
   });
 }
 

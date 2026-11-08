@@ -81,7 +81,7 @@ import {
   workspaceOperations,
 } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
-import { isManagedRepairDispatchDenial, noteManagedRepairRunFailure, evaluateManagedRepairDispatch } from "../managed-repair-control.js";
+import { isManagedRepairDispatchDenial, noteManagedRepairRunFailure, noteManagedRepairRunInterruption, evaluateManagedRepairDispatch } from "../managed-repair-control.js";
 import { publishLiveEvent } from "../live-events.js";
 import {
   appendHeartbeatRunEvent,
@@ -1059,8 +1059,12 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
               .where(eq(heartbeatRuns.id, runId))
               .returning()
               .then((rows) => rows[0] ?? null);
-            if (row && managedRepairTerminalHaltAction(status) === "halt" && previousStatus?.status !== status) {
-              await noteManagedRepairRunFailure(tx as unknown as typeof db, row);
+            if (row && previousStatus?.status !== status) {
+              if (managedRepairTerminalHaltAction(status) === "halt") {
+                await noteManagedRepairRunFailure(tx as unknown as typeof db, row);
+              } else if (status === "interrupted") {
+                await noteManagedRepairRunInterruption(tx as unknown as typeof db, row);
+              }
             }
             return row;
           });
@@ -1189,8 +1193,12 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
                 if (cancellationCondition) rethrowNativeCancellationLockConflict(error);
                 throw error;
               });
-            if (row && managedRepairTerminalHaltAction(status) === "halt" && previousStatus?.status !== status) {
-              await noteManagedRepairRunFailure(tx as unknown as typeof db, row);
+            if (row && previousStatus?.status !== status) {
+              if (managedRepairTerminalHaltAction(status) === "halt") {
+                await noteManagedRepairRunFailure(tx as unknown as typeof db, row);
+              } else if (status === "interrupted") {
+                await noteManagedRepairRunInterruption(tx as unknown as typeof db, row);
+              }
             }
             return row;
           });

@@ -225,6 +225,27 @@ export function managedRepairTerminalHaltAction(status: string): "halt" | "stop_
   }
 }
 
+/**
+ * An interrupted enrolled run is not a dispatch failure, and it is not
+ * permission to continue. The previous grant and lifted hold stop applying.
+ * Shutdown, deferred promotion, conversation continuation, and bounded retry
+ * then fail closed until a later explicit board grant.
+ */
+export function managedRepairInterruptStopsAutomaticResume(
+  repair: ManagedRepairState,
+  now = new Date().toISOString(),
+): ManagedRepairState {
+  if (!repair.enrolled) return repair;
+  return {
+    ...repair,
+    authorizationSource: null,
+    authorizationGrantedByUserId: null,
+    authorizedScope: [],
+    liveHold: true,
+    updatedAt: now,
+  };
+}
+
 export function isConcreteNextStep(text: string | null | undefined): boolean {
   const trimmed = text?.trim() ?? "";
   return trimmed.length >= 8 && /\s/.test(trimmed);

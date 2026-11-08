@@ -791,14 +791,14 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: HeartbeatRunRow
     issue.assigneeAgentId === run.agentId &&
     !["done", "cancelled"].includes(issue.status);
   if (!applies || isAcknowledgedNativeStop(run) || isAcknowledgedNativeReassignmentStop(run)) return false;
-  if (run.status === "cancelled") {
+  if (run.status === "cancelled" || run.status === "interrupted") {
     const [repair] = await tx
       .select({ enrolled: issueManagedRepairs.enrolled })
       .from(issueManagedRepairs)
       .where(and(eq(issueManagedRepairs.companyId, issue.companyId), eq(issueManagedRepairs.issueId, issue.id)))
       .limit(1);
-    // Board cancel writes the cancelled run before the issue status. Do not
-    // project this task to blocked, and let the drain retire its deferred wake.
+    // Board cancel and interrupt must not project the task to blocked.
+    // The drain then retires a deferred wake instead of promoting it.
     if (repair?.enrolled) return false;
   }
 

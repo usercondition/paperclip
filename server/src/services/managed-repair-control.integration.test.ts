@@ -1033,8 +1033,12 @@ describe("managed repair native enforcement", () => {
     const lifecycle = createHeartbeatLifecycle(db, { emitTerminalAgentTaskRun() {} } as never);
     await lifecycle.setRunStatus(runId, "interrupted");
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.status).toBe("interrupted");
-    expect((await service.get(fixture.companyId, issueId))?.dispatchHalted).toBe(false);
-    expect((await service.get(fixture.companyId, issueId))?.dispatchFailureCount).toBe(0);
+    const interruptedRepair = await service.get(fixture.companyId, issueId);
+    expect(interruptedRepair?.dispatchHalted).toBe(false);
+    expect(interruptedRepair?.dispatchFailureCount).toBe(0);
+    expect(interruptedRepair?.liveHold).toBe(true);
+    expect(interruptedRepair?.authorizationSource).toBeNull();
+    expect(interruptedRepair?.authorizationGrantedByUserId).toBeNull();
 
     await lifecycle.setRunStatus(runId, "failed", { error: "adapter exploded" });
     const halted = await service.get(fixture.companyId, issueId);
@@ -1046,7 +1050,7 @@ describe("managed repair native enforcement", () => {
       issueId,
       source: "automatic",
       triggerId: "after-failure",
-    })).rejects.toSatisfy((error: unknown) => httpCode(error) === "managed_repair_halted");
+    })).rejects.toSatisfy((error: unknown) => httpCode(error) === "managed_repair_not_accountable");
     const queue = createWakeQueue(db, {
       resolveResponsibleUserId: async () => fixture.userId,
       getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
@@ -1108,9 +1112,228 @@ describe("managed repair native enforcement", () => {
       contextSnapshot: { issueId: interruptedId },
     });
     await lifecycle.setRunStatus(interruptedRunId, "interrupted");
-    expect((await service.get(fixture.companyId, interruptedId))?.dispatchHalted).toBe(false);
+    const stopped = await service.get(fixture.companyId, interruptedId);
+    expect(stopped?.dispatchHalted).toBe(false);
+    expect(stopped?.liveHold).toBe(true);
+    expect(stopped?.authorizationGrantedByUserId).toBeNull();
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.issueId, interruptedId))).map((run) => run.status)).toEqual(["interrupted"]);
   });
+
+  it("does not resume an interrupted managed repair through shutdown, release, or retry", async () => {
+    const fixture = await seedCompany("Interrupt resume");
+    const issueId = await seedIssue({ ...fixture, title: "Interrupted managed job" });
+    const service = managedRepairControlService(db);
+    await service.enroll(fixture.companyId, issueId, {
+      attempt: attempt(fixture.userId),
+      ownerUserId: fixture.userId,
+      nextStepId: "step-1",
+      nextStepText: "Do not continue after interrupt",
+    });
+    await service.grant(fixture.companyId, issueId, {
+      attempt: attempt(fixture.userId),
+      scope: ["execute_next_step"],
+      liftHold: true,
+    });
+    const runId = randomUUID();
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId: fixture.companyId,
+      issueId,
+      authorType: "user",
+      authorUserId: fixture.userId,
+      body: "Continue after the shutdown",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      issueId,
+      status: "running",
+      runtimeMode: "legacy",
+      contextSnapshot: { issueId },
+      resultJson: { conversationContinuation: "continue_conversation_v1" },
+      responsibleUserId: fixture.userId,
+    });
+    await db.update(issues).set({
+      status: "in_progress",
+      executionRunId: runId,
+      checkoutRunId: runId,
+    }).where(eq(issues.id, issueId));
+    await db.insert(agentWakeupRequests).values({
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "issue_commented",
+      status: "deferred_issue_execution",
+      requestedByActorType: "user",
+      requestedByActorId: fixture.userId,
+      idempotencyKey: `interrupt-deferred-${issueId}`,
+      payload: {
+        issueId,
+        commentId,
+        _paperclipWakeContext: {
+          issueId,
+          wakeReason: "issue_commented",
+          wakeCommentIds: [commentId],
+        },
+      },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const drained = await heartbeat.drainRunningRunsForShutdown("SIGTERM", new Date(), [runId]);
+    expect(drained.interruptedRunIds).toEqual([runId]);
+    expect(drained.retryRunIds).toEqual([]);
+    const repair = await service.get(fixture.companyId, issueId);
+    expect(repair?.dispatchHalted).toBe(false);
+    expect(repair?.dispatchFailureCount).toBe(0);
+    expect(repair?.liveHold).toBe(true);
+    expect(repair?.authorizationSource).toBeNull();
+    expect(repair?.authorizationGrantedByUserId).toBeNull();
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, `interrupt-deferred-${issueId}`));
+    expect(wake?.status).toBe("cancelled");
+    expect(wake?.runId).toBeNull();
+    const managedRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.issueId, issueId));
+    expect(managedRuns.map((run) => run.status)).toEqual(["interrupted"]);
+
+    const retried = await heartbeat.scheduleBoundedRetry(runId);
+    expect(retried.outcome).toBe("not_scheduled");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.issueId, issueId))).map((run) => run.id)).toEqual([runId]);
+
+    const nativeRunId = randomUUID();
+    const nativeIssueId = await seedIssue({ ...fixture, title: "Native interrupted release" });
+    await service.enroll(fixture.companyId, nativeIssueId, {
+      attempt: attempt(fixture.userId),
+      ownerUserId: fixture.userId,
+      nextStepId: "step-1",
+      nextStepText: "Do not promote the deferred comment",
+    });
+    await service.grant(fixture.companyId, nativeIssueId, {
+      attempt: attempt(fixture.userId),
+      scope: ["execute_next_step"],
+      liftHold: true,
+    });
+    const nativeCommentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: nativeCommentId,
+      companyId: fixture.companyId,
+      issueId: nativeIssueId,
+      authorType: "user",
+      authorUserId: fixture.userId,
+      body: "Still waiting",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: nativeRunId,
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      issueId: nativeIssueId,
+      status: "running",
+      runtimeMode: "native",
+      contextSnapshot: { issueId: nativeIssueId },
+      resultJson: { conversationContinuation: "continue_conversation_v1" },
+      responsibleUserId: fixture.userId,
+    });
+    await db.update(issues).set({
+      status: "in_progress",
+      executionRunId: nativeRunId,
+      checkoutRunId: nativeRunId,
+    }).where(eq(issues.id, nativeIssueId));
+    await db.insert(agentWakeupRequests).values({
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "issue_commented",
+      status: "deferred_issue_execution",
+      requestedByActorType: "user",
+      requestedByActorId: fixture.userId,
+      idempotencyKey: `native-interrupt-${nativeIssueId}`,
+      payload: {
+        issueId: nativeIssueId,
+        commentId: nativeCommentId,
+        _paperclipWakeContext: {
+          issueId: nativeIssueId,
+          wakeReason: "issue_commented",
+          wakeCommentIds: [nativeCommentId],
+        },
+      },
+    });
+    const lifecycle = createHeartbeatLifecycle(db, { emitTerminalAgentTaskRun() {} } as never);
+    await lifecycle.setRunStatus(nativeRunId, "interrupted");
+    const queue = createWakeQueue(db, {
+      resolveResponsibleUserId: async () => fixture.userId,
+      getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+      resolveSessionBeforeForWakeup: async () => null,
+      wakeAdmissionHelpers: {
+        filterZombieCoalesceTarget: (target) => target,
+        mergeCoalescedContextSnapshot: (existing) => (
+          existing && typeof existing === "object" ? existing as Record<string, unknown> : {}
+        ),
+        shouldDeferFollowupWakeForSameIssue: () => false,
+        shouldQueueFollowupForRunningIssueWake: () => false,
+      },
+      recovery: {
+        escalateStrandedAssignedIssue: async () => {},
+        escalateStrandedRecoveryIssueInPlace: async () => {},
+      },
+    });
+    const released = await queue.releaseIssueExecution({
+      companyId: fixture.companyId,
+      runId: nativeRunId,
+      now: new Date(),
+    });
+    expect(released.outcome.kind).toBe("released");
+    expect(released.postCommitEffects.some((effect) => effect.kind === "conversation_retry_requested")).toBe(false);
+    expect(released.postCommitEffects.some((effect) => effect.kind === "run_queued")).toBe(false);
+    const [nativeWake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, `native-interrupt-${nativeIssueId}`));
+    expect(nativeWake?.status).toBe("cancelled");
+    expect(nativeWake?.runId).toBeNull();
+    const nativeRetry = await heartbeat.scheduleBoundedRetry(nativeRunId);
+    expect(nativeRetry.outcome).toBe("not_scheduled");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.issueId, nativeIssueId))).map((run) => run.id)).toEqual([nativeRunId]);
+
+    await service.grant(fixture.companyId, issueId, {
+      attempt: attempt(fixture.userId),
+      scope: ["execute_next_step"],
+      liftHold: true,
+    });
+    await expect(evaluateManagedRepairDispatch(db, {
+      companyId: fixture.companyId,
+      issueId,
+      source: "automatic",
+      triggerId: "fresh-grant-after-interrupt",
+    })).resolves.toMatchObject({ allowed: true });
+    const retryAfterGrant = await heartbeat.scheduleBoundedRetry(runId);
+    expect(retryAfterGrant.outcome).toBe("not_scheduled");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.issueId, issueId))).map((run) => run.status)).toEqual(["interrupted"]);
+
+    const ordinaryId = await seedIssue({ ...fixture, title: "Ordinary shutdown" });
+    const ordinaryRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: ordinaryRunId,
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      issueId: ordinaryId,
+      status: "running",
+      runtimeMode: "legacy",
+      contextSnapshot: { issueId: ordinaryId },
+      resultJson: { conversationContinuation: "continue_conversation_v1" },
+      responsibleUserId: fixture.userId,
+    });
+    await db.update(issues).set({
+      status: "in_progress",
+      executionRunId: ordinaryRunId,
+      checkoutRunId: ordinaryRunId,
+    }).where(eq(issues.id, ordinaryId));
+    const ordinary = await heartbeat.drainRunningRunsForShutdown("SIGTERM", new Date(), [ordinaryRunId]);
+    expect(ordinary.interruptedRunIds).toEqual([ordinaryRunId]);
+    expect(ordinary.retryRunIds).toHaveLength(1);
+    const ordinaryRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.issueId, ordinaryId));
+    expect(ordinaryRuns.map((run) => run.status).sort()).toEqual(["interrupted", "scheduled_retry"]);
+    const [ordinaryRepair] = await db.select().from(issueManagedRepairs).where(eq(issueManagedRepairs.issueId, ordinaryId));
+    expect(ordinaryRepair).toBeUndefined();
+  }, 60_000);
 
   it("fails closed when the managed repair table is absent", async () => {
     const fixture = await seedCompany("Missing migration");

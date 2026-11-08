@@ -35,6 +35,7 @@ import {
   agentWakeupRequests,
   executionWorkspaces,
   heartbeatRuns,
+  issueManagedRepairs,
   issues,
 } from "@paperclipai/db";
 import {
@@ -980,6 +981,26 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           };
           retryContextSnapshot.explicitUserContinuation = continuation;
           retryContextSnapshot.previousRunId = continuation.previousRunId;
+        }
+
+        if (issueId && run.status === "interrupted") {
+          const [repair] = await tx
+            .select({ enrolled: issueManagedRepairs.enrolled })
+            .from(issueManagedRepairs)
+            .where(and(
+              eq(issueManagedRepairs.companyId, run.companyId),
+              eq(issueManagedRepairs.issueId, issueId),
+            ))
+            .limit(1);
+          if (repair?.enrolled) {
+            return {
+              outcome: "not_scheduled",
+              issueId,
+              errorCode: "managed_repair_dispatch_denied",
+              reason: "An interrupted managed repair does not schedule its own successor",
+              details: {},
+            };
+          }
         }
 
         if (issueId) {
