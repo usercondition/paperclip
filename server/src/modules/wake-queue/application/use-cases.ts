@@ -328,8 +328,29 @@ async function promoteDeferredWake(
   input: ReleaseIssueExecutionInput,
 ): Promise<ReleaseTransactionResult | null> {
   let currentIssue = issue;
+  const enrolledManagedRepair = await ports.transaction.isEnrolledManagedRepair({
+    companyId: run.companyId,
+    issueId: currentIssue.id,
+  });
+  // Board cancel writes the run's cancelled status before the issue status.
+  // A deferred comment must not become a successor, and a terminal managed
+  // repair must not reopen to todo before the dispatch gate. A hold does not
+  // undo side effects the finishing run already performed.
+  if (
+    enrolledManagedRepair &&
+    (run.status === "cancelled" || currentIssue.status === "done" || currentIssue.status === "cancelled")
+  ) {
+    await ports.transaction.cancelDeferredWake({
+      companyId: run.companyId,
+      wakeId: workingCandidate.id,
+      reason: "Managed repair does not resume a deferred wake after stop or completion",
+      now: input.now,
+    });
+    return null;
+  }
   let shouldReopen = false;
   if (
+    !enrolledManagedRepair &&
     !workingCandidate.authorizedFailedChatRetry &&
     workingCandidate.deferredCommentIds.length > 0 &&
     (currentIssue.status === "done" || currentIssue.status === "cancelled")

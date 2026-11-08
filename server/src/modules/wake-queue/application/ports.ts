@@ -167,6 +167,7 @@ export interface WakeQueueTransaction {
     commentIds: string[];
   }): Promise<boolean>;
   reopenIssue(input: { companyId: string; issueId: string; runId: string }): Promise<IssueSnapshot | null>;
+  isEnrolledManagedRepair(input: { companyId: string; issueId: string }): Promise<boolean>;
   /** Verifies a Done onboarding parent's completion wake against its own completed children. */
   isCompletedOnboardingHandoffWake(input: { companyId: string; issueId: string; agentId: string;
     reason: string | null; contextSnapshot: Record<string, unknown> }): Promise<boolean>;

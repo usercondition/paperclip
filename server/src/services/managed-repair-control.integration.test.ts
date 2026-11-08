@@ -30,6 +30,7 @@ import { heartbeatService } from "../services/heartbeat.js";
 import { createWakeQueue } from "../modules/wake-queue/index.js";
 import { createHeartbeatLifecycle } from "../services/heartbeat/run-lifecycle.js";
 import { issueService } from "../services/issues.js";
+import { managedRepairResultChecksum } from "@paperclipai/shared";
 import {
   evaluateManagedRepairDispatch,
   managedRepairControlService,
@@ -698,4 +699,437 @@ describe("managed repair native enforcement", () => {
     await release(ordinaryRunId);
     expect((await runsFor(ordinaryId)).filter((run) => run.status === "queued")).toHaveLength(1);
   }, 60_000);
+
+  function repairApp(mode: "authenticated" | "local_trusted") {
+    const app = express();
+    app.use(express.json());
+    app.use("/api", actorMiddleware(db, { deploymentMode: mode }));
+    app.use("/api", managedRepairRoutes(db));
+    app.use(errorHandler);
+    return app;
+  }
+
+  it("rejects unauthenticated local_trusted managed-repair admin writes", async () => {
+    const fixture = await seedCompany("Local trusted");
+    const issueId = await seedIssue({ ...fixture, title: "No implicit board" });
+    const ordinaryId = await seedIssue({ ...fixture, title: "Ordinary local" });
+    const app = repairApp("local_trusted");
+    const path = `/api/companies/${fixture.companyId}/issues/${issueId}/managed-repair`;
+    const bodies = [
+      ["enroll", { ownerUserId: fixture.userId, nextStepId: "step-1", nextStepText: "Stay closed" }],
+      ["grant", { scope: ["execute_next_step"], liftHold: true }],
+      ["hold", { hold: false }],
+      ["verdict", { outcome: "PASS", artifactVersion: randomUUID(), kind: "qa", source: "independent_review" }],
+      ["stage", { stage: "applied" }],
+      ["offline-dispatch", { triggerId: "local-offline" }],
+    ] as const;
+    for (const [action, body] of bodies) {
+      const response = await request(app).post(`${path}/${action}`).send(body);
+      expect(response.status, action).toBe(403);
+    }
+    expect((await db.select().from(issueManagedRepairs).where(eq(issueManagedRepairs.issueId, issueId)))).toHaveLength(0);
+    const ordinary = await issueService(db).update(ordinaryId, { status: "in_progress" });
+    expect(ordinary?.status).toBe("in_progress");
+    expect(await db.select().from(issueManagedRepairs).where(eq(issueManagedRepairs.issueId, ordinaryId))).toHaveLength(0);
+  });
+
+  it("binds an independent verdict to the authenticated reviewer and the persisted result", async () => {
+    const fixture = await seedCompany("Independent review");
+    const reviewerId = `reviewer-${randomUUID()}`;
+    const now = new Date();
+    await db.insert(authUsers).values({
+      id: reviewerId,
+      name: "Independent Reviewer",
+      email: `${reviewerId}@example.test`,
+      emailVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(companyMemberships).values({
+      companyId: fixture.companyId,
+      principalType: "user",
+      principalId: reviewerId,
+      status: "active",
+      membershipRole: "owner",
+    });
+    const issueId = await seedIssue({ ...fixture, title: "Needs a second person" });
+    const ownerToken = `pcp_board_${randomUUID()}`;
+    const reviewerToken = `pcp_board_${randomUUID()}`;
+    await db.insert(boardApiKeys).values([
+      { userId: fixture.userId, name: "owner", keyHash: hashBearerToken(ownerToken) },
+      { userId: reviewerId, name: "reviewer", keyHash: hashBearerToken(reviewerToken) },
+    ]);
+    const result = { diff: "exact managed repair result" };
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      issueId,
+      status: "succeeded",
+      runtimeMode: "native",
+      resultJson: result,
+    });
+    const app = repairApp("authenticated");
+    const path = `/api/companies/${fixture.companyId}/issues/${issueId}/managed-repair`;
+    const owner = request(app);
+    const enroll = await owner.post(`${path}/enroll`).set("Authorization", `Bearer ${ownerToken}`).send({
+      ownerUserId: fixture.userId,
+      nextStepId: "step-1",
+      nextStepText: "Save the exact result",
+    });
+    expect(enroll.status).toBe(201);
+    const checksum = managedRepairResultChecksum(result);
+    const prose = await owner.post(`${path}/saved-result`).set("Authorization", `Bearer ${ownerToken}`).send({
+      version: runId,
+      evidenceRef: "I-said-so",
+    });
+    expect(prose.status).toBe(400);
+    const mismatched = await owner.post(`${path}/saved-result`).set("Authorization", `Bearer ${ownerToken}`).send({
+      version: runId,
+      evidenceRef: `sha256:${"ab".repeat(32)}`,
+    });
+    expect(mismatched.status).toBe(422);
+    expect(mismatched.body.details?.code ?? mismatched.body.code).toBe("managed_repair_unbound_result");
+    const saved = await owner.post(`${path}/saved-result`).set("Authorization", `Bearer ${ownerToken}`).send({
+      version: runId,
+      evidenceRef: checksum,
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.body.savedResultVersion).toBe(runId);
+    expect(saved.body.savedResultEvidenceRef).toBe(checksum);
+    const spoof = await owner.post(`${path}/verdict`).set("Authorization", `Bearer ${ownerToken}`).send({
+      outcome: "PASS",
+      artifactVersion: runId,
+      kind: "qa",
+      source: "independent_review",
+      reviewerUserId: reviewerId,
+    });
+    expect(spoof.status).toBe(400);
+    const ownerVerdict = await owner.post(`${path}/verdict`).set("Authorization", `Bearer ${ownerToken}`).send({
+      outcome: "PASS",
+      artifactVersion: runId,
+      kind: "qa",
+      source: "independent_review",
+    });
+    expect(ownerVerdict.status).toBe(422);
+    expect(ownerVerdict.body.details?.code ?? ownerVerdict.body.code).toBe("managed_repair_self_approval");
+    const verdict = await request(app).post(`${path}/verdict`).set("Authorization", `Bearer ${reviewerToken}`).send({
+      outcome: "PASS",
+      artifactVersion: runId,
+      kind: "qa",
+      source: "independent_review",
+    });
+    expect(verdict.status).toBe(201);
+    expect(verdict.body.reviewerUserId).toBe(reviewerId);
+    expect(verdict.body.reviewerAgentId).toBeNull();
+    const applied = await request(app).post(`${path}/stage`).set("Authorization", `Bearer ${reviewerToken}`).send({ stage: "applied" });
+    expect(applied.status).toBe(200);
+    const verified = await request(app).post(`${path}/stage`).set("Authorization", `Bearer ${reviewerToken}`).send({ stage: "independently_verified" });
+    expect(verified.status).toBe(200);
+    expect(verified.body.stage).toBe("independently_verified");
+    const done = await issueService(db).update(issueId, { status: "done" });
+    expect(done?.status).toBe("done");
+  });
+
+  it("cancels a held managed job and its deferred comment without reopening or a successor", async () => {
+    const fixture = await seedCompany("Board cancel");
+    const service = managedRepairControlService(db);
+    const issuesSvc = issueService(db);
+    const queue = createWakeQueue(db, {
+      resolveResponsibleUserId: async () => fixture.userId,
+      getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+      resolveSessionBeforeForWakeup: async () => null,
+      wakeAdmissionHelpers: {
+        filterZombieCoalesceTarget: (target) => target,
+        mergeCoalescedContextSnapshot: (existing) => (
+          existing && typeof existing === "object" ? existing as Record<string, unknown> : {}
+        ),
+        shouldDeferFollowupWakeForSameIssue: () => false,
+        shouldQueueFollowupForRunningIssueWake: () => false,
+      },
+      recovery: {
+        escalateStrandedAssignedIssue: async () => {},
+        escalateStrandedRecoveryIssueInPlace: async () => {},
+      },
+    });
+
+    async function deferredComment(issueId: string, runId: string, status: string) {
+      const commentId = randomUUID();
+      await db.insert(issueComments).values({
+        id: commentId,
+        companyId: fixture.companyId,
+        issueId,
+        authorType: "user",
+        authorUserId: fixture.userId,
+        body: "Please continue",
+      });
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId: fixture.companyId,
+        agentId: fixture.agentId,
+        issueId,
+        status,
+        runtimeMode: "native",
+        contextSnapshot: { issueId },
+        responsibleUserId: fixture.userId,
+      });
+      await db.update(issues).set({
+        status: status === "cancelled" ? "done" : "in_progress",
+        executionRunId: runId,
+        checkoutRunId: runId,
+      }).where(eq(issues.id, issueId));
+      await db.insert(agentWakeupRequests).values({
+        companyId: fixture.companyId,
+        agentId: fixture.agentId,
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "issue_commented",
+        status: "deferred_issue_execution",
+        requestedByActorType: "user",
+        requestedByActorId: fixture.userId,
+        idempotencyKey: `deferred-${issueId}`,
+        payload: {
+          issueId,
+          commentId,
+          _paperclipWakeContext: {
+            issueId,
+            wakeReason: "issue_commented",
+            wakeCommentIds: [commentId],
+          },
+        },
+      });
+    }
+
+    const heldId = await seedIssue({ ...fixture, title: "Held running job" });
+    const heldRunId = randomUUID();
+    await service.enroll(fixture.companyId, heldId, {
+      attempt: attempt(fixture.userId),
+      ownerUserId: fixture.userId,
+      nextStepId: "step-1",
+      nextStepText: "Stop this running job",
+    });
+    await deferredComment(heldId, heldRunId, "cancelled");
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, heldId));
+    const heldRelease = await queue.releaseIssueExecution({
+      companyId: fixture.companyId,
+      runId: heldRunId,
+      now: new Date(),
+      suppressImmediateRecovery: true,
+    });
+    expect(heldRelease.outcome.kind).toBe("released");
+    const stopped = await issuesSvc.update(heldId, { status: "cancelled", boardHumanStop: true });
+    expect(stopped?.status).toBe("cancelled");
+    const [heldIssue] = await db.select().from(issues).where(eq(issues.id, heldId));
+    expect(heldIssue?.executionRunId).toBeNull();
+    expect(heldIssue?.checkoutRunId).toBeNull();
+    const heldWake = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, `deferred-${heldId}`));
+    expect(heldWake[0]?.status).toBe("cancelled");
+    expect(heldWake[0]?.runId).toBeNull();
+    const heldRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.issueId, heldId));
+    expect(heldRuns.map((run) => run.id)).toEqual([heldRunId]);
+
+    const authorizedId = await seedIssue({ ...fixture, title: "Authorized running job" });
+    const authorizedRunId = randomUUID();
+    await service.enroll(fixture.companyId, authorizedId, {
+      attempt: attempt(fixture.userId),
+      ownerUserId: fixture.userId,
+      nextStepId: "step-1",
+      nextStepText: "Board stop after authorization",
+    });
+    await service.grant(fixture.companyId, authorizedId, {
+      attempt: attempt(fixture.userId),
+      scope: ["execute_next_step"],
+      liftHold: true,
+    });
+    await deferredComment(authorizedId, authorizedRunId, "cancelled");
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, authorizedId));
+    await queue.releaseIssueExecution({
+      companyId: fixture.companyId,
+      runId: authorizedRunId,
+      now: new Date(),
+      suppressImmediateRecovery: true,
+    });
+    const authorizedStop = await issuesSvc.update(authorizedId, { status: "cancelled", boardHumanStop: true });
+    expect(authorizedStop?.status).toBe("cancelled");
+    const authorizedRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.issueId, authorizedId));
+    expect(authorizedRuns.map((run) => run.id)).toEqual([authorizedRunId]);
+    const authorizedWake = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, `deferred-${authorizedId}`));
+    expect(authorizedWake[0]?.status).toBe("cancelled");
+    expect(authorizedWake[0]?.runId).toBeNull();
+
+    const doneId = await seedIssue({ ...fixture, title: "Done must not reopen" });
+    const doneRunId = randomUUID();
+    await service.enroll(fixture.companyId, doneId, {
+      attempt: attempt(fixture.userId),
+      ownerUserId: fixture.userId,
+      nextStepId: "step-1",
+      nextStepText: "Do not reopen this",
+    });
+    await deferredComment(doneId, doneRunId, "cancelled");
+    await expect(queue.releaseIssueExecution({
+      companyId: fixture.companyId,
+      runId: doneRunId,
+      now: new Date(),
+      suppressImmediateRecovery: true,
+    })).resolves.toMatchObject({ outcome: { kind: "released" } });
+    const [doneIssue] = await db.select().from(issues).where(eq(issues.id, doneId));
+    expect(doneIssue?.status).toBe("done");
+    expect(doneIssue?.executionRunId).toBeNull();
+    const doneWake = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, `deferred-${doneId}`));
+    expect(doneWake[0]?.status).toBe("cancelled");
+    const doneRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.issueId, doneId));
+    expect(doneRuns.filter((run) => run.status === "queued")).toHaveLength(0);
+  });
+
+  it("records a failure halt in the same transaction as the terminal status", async () => {
+    const fixture = await seedCompany("Atomic halt");
+    const issueId = await seedIssue({ ...fixture, title: "Halt with the status" });
+    const missingClaimId = await seedIssue({ ...fixture, title: "Missing claim" });
+    const interruptedId = await seedIssue({ ...fixture, title: "Interrupted stop" });
+    const service = managedRepairControlService(db);
+    for (const id of [issueId, missingClaimId, interruptedId]) {
+      await service.enroll(fixture.companyId, id, {
+        attempt: attempt(fixture.userId),
+        ownerUserId: fixture.userId,
+        nextStepId: "step-1",
+        nextStepText: "Halt only a real failure",
+      });
+      await service.grant(fixture.companyId, id, {
+        attempt: attempt(fixture.userId),
+        scope: ["execute_next_step"],
+        liftHold: true,
+      });
+    }
+    const admission = await evaluateManagedRepairDispatch(db, {
+      companyId: fixture.companyId,
+      issueId,
+      source: "direct",
+      triggerId: "atomic-failure",
+    });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      issueId,
+      status: "queued",
+      runtimeMode: "native",
+      contextSnapshot: { issueId, managedRepairClaimId: admission.claimId },
+    });
+    await expect(db.transaction(async (tx) => {
+      await tx.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, runId));
+      await noteManagedRepairRunFailure(tx as unknown as typeof db, {
+        id: runId,
+        companyId: fixture.companyId,
+        issueId,
+        contextSnapshot: { issueId, managedRepairClaimId: admission.claimId },
+      });
+      throw new Error("rollback-halt");
+    })).rejects.toThrow("rollback-halt");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.status).toBe("queued");
+    expect((await service.get(fixture.companyId, issueId))?.dispatchHalted).toBe(false);
+
+    const lifecycle = createHeartbeatLifecycle(db, { emitTerminalAgentTaskRun() {} } as never);
+    await lifecycle.setRunStatus(runId, "interrupted");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.status).toBe("interrupted");
+    expect((await service.get(fixture.companyId, issueId))?.dispatchHalted).toBe(false);
+    expect((await service.get(fixture.companyId, issueId))?.dispatchFailureCount).toBe(0);
+
+    await lifecycle.setRunStatus(runId, "failed", { error: "adapter exploded" });
+    const halted = await service.get(fixture.companyId, issueId);
+    expect(halted?.dispatchHalted).toBe(true);
+    expect(halted?.dispatchFailureCount).toBe(1);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.status).toBe("failed");
+    await expect(evaluateManagedRepairDispatch(db, {
+      companyId: fixture.companyId,
+      issueId,
+      source: "automatic",
+      triggerId: "after-failure",
+    })).rejects.toSatisfy((error: unknown) => httpCode(error) === "managed_repair_halted");
+    const queue = createWakeQueue(db, {
+      resolveResponsibleUserId: async () => fixture.userId,
+      getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+      resolveSessionBeforeForWakeup: async () => null,
+      wakeAdmissionHelpers: {
+        filterZombieCoalesceTarget: (target) => target,
+        mergeCoalescedContextSnapshot: (existing) => (
+          existing && typeof existing === "object" ? existing as Record<string, unknown> : {}
+        ),
+        shouldDeferFollowupWakeForSameIssue: () => false,
+        shouldQueueFollowupForRunningIssueWake: () => false,
+      },
+      recovery: {
+        escalateStrandedAssignedIssue: async () => {},
+        escalateStrandedRecoveryIssueInPlace: async () => {},
+      },
+    });
+    await db.update(issues).set({ executionRunId: runId, status: "in_progress" }).where(eq(issues.id, issueId));
+    const released = await queue.releaseIssueExecution({
+      companyId: fixture.companyId,
+      runId,
+      now: new Date(),
+      suppressImmediateRecovery: true,
+    });
+    expect(released.outcome.kind).not.toBe("promoted");
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.issueId, issueId));
+    expect(runs.map((run) => run.id)).toEqual([runId]);
+
+    const missingRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: missingRunId,
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      issueId: missingClaimId,
+      status: "running",
+      runtimeMode: "native",
+      contextSnapshot: { issueId: missingClaimId },
+    });
+    await lifecycle.setRunStatus(missingRunId, "timed_out", { error: "timed out" });
+    const missing = await service.get(fixture.companyId, missingClaimId);
+    expect(missing?.dispatchHalted).toBe(true);
+    expect(missing?.dispatchFailureCount).toBe(1);
+    await noteManagedRepairRunFailure(db, {
+      id: missingRunId,
+      companyId: fixture.companyId,
+      issueId: missingClaimId,
+      contextSnapshot: { issueId: missingClaimId },
+    });
+    expect((await service.get(fixture.companyId, missingClaimId))?.dispatchFailureCount).toBe(1);
+
+    const interruptedRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: interruptedRunId,
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      issueId: interruptedId,
+      status: "running",
+      runtimeMode: "native",
+      contextSnapshot: { issueId: interruptedId },
+    });
+    await lifecycle.setRunStatus(interruptedRunId, "interrupted");
+    expect((await service.get(fixture.companyId, interruptedId))?.dispatchHalted).toBe(false);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.issueId, interruptedId))).map((run) => run.status)).toEqual(["interrupted"]);
+  });
+
+  it("fails closed when the managed repair table is absent", async () => {
+    const fixture = await seedCompany("Missing migration");
+    const ordinaryId = await seedIssue({ ...fixture, title: "Ordinary while present" });
+    const moved = await issueService(db).update(ordinaryId, { status: "in_progress" });
+    expect(moved?.status).toBe("in_progress");
+    await db.execute(sql`alter table issue_managed_repairs rename to issue_managed_repairs_absent`);
+    try {
+      await expect(issueService(db).update(ordinaryId, { status: "done" })).rejects.toThrow();
+      const [row] = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, ordinaryId));
+      expect(row?.status).toBe("in_progress");
+      await expect(evaluateManagedRepairDispatch(db, {
+        companyId: fixture.companyId,
+        issueId: ordinaryId,
+        source: "automatic",
+        triggerId: "missing-table",
+      })).rejects.toThrow();
+    } finally {
+      await db.execute(sql`alter table issue_managed_repairs_absent rename to issue_managed_repairs`);
+    }
+  });
 });

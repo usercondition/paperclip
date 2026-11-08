@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import {
   agents,
   companies,
+  heartbeatRuns,
   issueManagedRepairs,
   issues,
   managedRepairVerdicts,
@@ -20,7 +21,9 @@ import {
   decideStageTransition,
   decideVerdictRecord,
   idleNextStepDue,
+  isExactManagedRepairEvidence,
   managedRepairIntentKey,
+  managedRepairResultChecksum,
   resolveManagedRepairWakeTrigger,
   type AuthorityAttempt,
   type ManagedRepairDatabase,
@@ -355,43 +358,91 @@ export async function planManagedRepairInFlightWake(
   return claim ? "join" : "defer";
 }
 
+async function inManagedRepairTransaction<T>(dbOrTx: Db, fn: (tx: Db) => Promise<T>): Promise<T> {
+  const nested = dbOrTx as Db & { rollback?: unknown };
+  if (typeof nested.rollback === "function") return fn(dbOrTx);
+  return dbOrTx.transaction(async (tx) => fn(tx as unknown as Db));
+}
+
 export async function noteManagedRepairRunFailure(
   dbOrTx: Db,
-  run: { id: string; companyId: string; contextSnapshot: unknown },
+  run: { id: string; companyId: string; issueId?: string | null; contextSnapshot: unknown },
 ) {
   const snapshot = run.contextSnapshot && typeof run.contextSnapshot === "object"
     ? run.contextSnapshot as Record<string, unknown>
     : {};
   const claimId = typeof snapshot.managedRepairClaimId === "string" ? snapshot.managedRepairClaimId : null;
-  if (!claimId) return null;
-  return dbOrTx.transaction(async (tx) => {
-    const [claimRow] = await tx
-      .select()
-      .from(managedRepairWakeClaims)
-      .where(and(eq(managedRepairWakeClaims.id, claimId), eq(managedRepairWakeClaims.companyId, run.companyId)))
-      .limit(1)
-      .for("update");
-    if (!claimRow) return null;
+  const issueId = run.issueId ?? (typeof snapshot.issueId === "string" ? snapshot.issueId : null);
+  if (!claimId && !issueId) return null;
+  return inManagedRepairTransaction(dbOrTx, async (tx) => {
+    const [claimRow] = claimId
+      ? await tx
+        .select()
+        .from(managedRepairWakeClaims)
+        .where(and(eq(managedRepairWakeClaims.id, claimId), eq(managedRepairWakeClaims.companyId, run.companyId)))
+        .limit(1)
+        .for("update")
+      : [];
     const [repairRow] = await tx
       .select()
       .from(issueManagedRepairs)
-      .where(and(eq(issueManagedRepairs.id, claimRow.repairId), eq(issueManagedRepairs.companyId, run.companyId)))
+      .where(claimRow
+        ? and(eq(issueManagedRepairs.id, claimRow.repairId), eq(issueManagedRepairs.companyId, run.companyId))
+        : and(eq(issueManagedRepairs.companyId, run.companyId), eq(issueManagedRepairs.issueId, issueId!)))
       .limit(1)
       .for("update");
-    if (!repairRow) return null;
-    const next = applyDispatchFailure(mapRepair(repairRow), mapClaim(claimRow));
-    await tx.update(managedRepairWakeClaims).set({
-      status: next.claim.status,
-      failureCount: next.claim.failureCount,
-      updatedAt: new Date(next.claim.updatedAt),
-    }).where(eq(managedRepairWakeClaims.id, next.claim.id));
+    if (!repairRow?.enrolled) return null;
+    if (claimRow) {
+      const next = applyDispatchFailure(mapRepair(repairRow), mapClaim(claimRow));
+      await tx.update(managedRepairWakeClaims).set({
+        status: next.claim.status,
+        failureCount: next.claim.failureCount,
+        updatedAt: new Date(next.claim.updatedAt),
+      }).where(eq(managedRepairWakeClaims.id, next.claim.id));
+      await tx.update(issueManagedRepairs).set({
+        dispatchFailureCount: next.repair.dispatchFailureCount,
+        dispatchHalted: next.repair.dispatchHalted,
+        updatedAt: new Date(next.repair.updatedAt),
+      }).where(eq(issueManagedRepairs.id, next.repair.id));
+      return next;
+    }
+    const repair = mapRepair(repairRow);
+    if (repair.dispatchHalted) return { repair, claim: null, halted: true };
+    const failureCount = repair.dispatchFailureCount + 1;
+    const halted = failureCount >= repair.maxDispatchFailures;
+    const nextRepair = {
+      ...repair,
+      dispatchFailureCount: failureCount,
+      dispatchHalted: halted,
+      updatedAt: new Date().toISOString(),
+    };
     await tx.update(issueManagedRepairs).set({
-      dispatchFailureCount: next.repair.dispatchFailureCount,
-      dispatchHalted: next.repair.dispatchHalted,
-      updatedAt: new Date(next.repair.updatedAt),
-    }).where(eq(issueManagedRepairs.id, next.repair.id));
-    return next;
+      dispatchFailureCount: nextRepair.dispatchFailureCount,
+      dispatchHalted: nextRepair.dispatchHalted,
+      updatedAt: new Date(nextRepair.updatedAt),
+    }).where(eq(issueManagedRepairs.id, nextRepair.id));
+    return { repair: nextRepair, claim: null, halted };
   });
+}
+
+async function persistedSavedResult(dbOrTx: Db, companyId: string, repair: ManagedRepairState) {
+  if (!repair.savedResultVersion || !isExactManagedRepairEvidence(repair.savedResultEvidenceRef)) return null;
+  const [run] = await dbOrTx
+    .select({
+      id: heartbeatRuns.id,
+      status: heartbeatRuns.status,
+      resultJson: heartbeatRuns.resultJson,
+    })
+    .from(heartbeatRuns)
+    .where(and(
+      eq(heartbeatRuns.id, repair.savedResultVersion),
+      eq(heartbeatRuns.companyId, companyId),
+      eq(heartbeatRuns.issueId, repair.issueId),
+    ))
+    .limit(1);
+  if (!run || run.status !== "succeeded") return null;
+  if (managedRepairResultChecksum(run.resultJson) !== repair.savedResultEvidenceRef?.toLowerCase()) return null;
+  return run;
 }
 
 async function requireIssue(dbOrTx: Db, companyId: string, issueId: string) {
@@ -527,13 +578,21 @@ export function managedRepairControlService(db: Db) {
           { code: "managed_repair_untrusted_authority" },
         );
       }
-      if (!input.version.trim() || !input.evidenceRef.trim()) {
-        throw unprocessable("Saved results need an exact version and evidence reference.", { code: "managed_repair_missing_saved_result" });
+      const version = input.version.trim();
+      const evidence = input.evidenceRef.trim().toLowerCase();
+      const recorded = {
+        ...current,
+        savedResultVersion: version,
+        savedResultEvidenceRef: evidence,
+      };
+      if (!(await persistedSavedResult(db, companyId, recorded))) {
+        throw unprocessable(
+          "Saved results must be the checksum of a succeeded run result for this issue.",
+          { code: "managed_repair_unbound_result" },
+        );
       }
       const repair = {
-        ...current,
-        savedResultVersion: input.version.trim(),
-        savedResultEvidenceRef: input.evidenceRef.trim(),
+        ...recorded,
         updatedAt: new Date().toISOString(),
       };
       await db.update(issueManagedRepairs).set(repairPatch(repair)).where(eq(issueManagedRepairs.id, repair.id));
@@ -550,14 +609,33 @@ export function managedRepairControlService(db: Db) {
     }) {
       const current = await loadRepair(db, companyId, issueId);
       if (!current?.enrolled) throw unprocessable("Managed repair is not enrolled.", { code: "managed_repair_not_enrolled" });
-      const decision = decideVerdictRecord(current, input);
+      if (
+        (input.reviewerUserId?.trim() && input.reviewerUserId.trim() !== input.attempt.actorUserId) ||
+        input.reviewerAgentId
+      ) {
+        throw unprocessable(
+          "The reviewer is the authenticated principal. A supplied reviewer id is not authority.",
+          { code: "managed_repair_reviewer_substitution" },
+        );
+      }
+      const decision = decideVerdictRecord(current, {
+        ...input,
+        reviewerUserId: input.attempt.actorUserId ?? null,
+        reviewerAgentId: null,
+      });
       throwDecision(decision);
+      if (input.kind === "qa" && input.source === "independent_review" && !(await persistedSavedResult(db, companyId, current))) {
+        throw unprocessable(
+          "An independent verdict must match the persisted run result checksum.",
+          { code: "managed_repair_result_checksum_mismatch" },
+        );
+      }
       const verdict: ManagedRepairVerdict = {
         id: randomUUID(),
         repairId: current.id,
         companyId,
-        reviewerUserId: input.reviewerUserId ?? input.attempt.actorUserId ?? null,
-        reviewerAgentId: input.reviewerAgentId ?? null,
+        reviewerUserId: input.attempt.actorUserId ?? null,
+        reviewerAgentId: null,
         outcome: input.outcome,
         artifactVersion: input.artifactVersion,
         kind: input.kind,

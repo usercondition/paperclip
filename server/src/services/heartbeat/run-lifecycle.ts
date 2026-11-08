@@ -54,6 +54,7 @@ import {
 import type { Db } from "@paperclipai/db";
 import {
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  managedRepairTerminalHaltAction,
   type HeartbeatRunStatusPhase,
   type RequestConfirmationResult,
   type RunLivenessState,
@@ -1046,24 +1047,25 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             patch,
             reconcileIfNeeded: true,
           })
-        : await db
-            .update(heartbeatRuns)
-            .set({
-              status,
-              ...patch,
-              executionStatusDeliveryId: randomUUID(),
-              updatedAt: new Date(),
-            })
-            .where(eq(heartbeatRuns.id, runId))
-            .returning()
-            .then((rows) => rows[0] ?? null);
+        : await db.transaction(async (tx) => {
+            const row = await tx
+              .update(heartbeatRuns)
+              .set({
+                status,
+                ...patch,
+                executionStatusDeliveryId: randomUUID(),
+                updatedAt: new Date(),
+              })
+              .where(eq(heartbeatRuns.id, runId))
+              .returning()
+              .then((rows) => rows[0] ?? null);
+            if (row && managedRepairTerminalHaltAction(status) === "halt" && previousStatus?.status !== status) {
+              await noteManagedRepairRunFailure(tx as unknown as typeof db, row);
+            }
+            return row;
+          });
 
     if (updated) {
-      if ((status === "failed" || status === "timed_out") && previousStatus?.status !== status) {
-        await noteManagedRepairRunFailure(db, updated).catch((err) => {
-          logger.warn({ err, runId: updated.id }, "managed repair failure halt was not recorded");
-        });
-      }
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",
@@ -1149,50 +1151,51 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             reconcileIfNeeded: true,
             writeConditions: [nativeRunnerOwnershipNotHeldCondition(), ...(cancellationCondition ? [cancellationCondition] : [])],
           })
-        : await db
-            .update(heartbeatRuns)
-            .set({
-              status,
-              ...patch,
-              executionStatusDeliveryId: randomUUID(),
-              updatedAt: new Date(),
-            })
-            .where(
-              and(
-                eq(heartbeatRuns.id, runId),
-                inArray(heartbeatRuns.status, fromStatuses),
-                // A result can commit after the orphan candidate was read.
-                // Reject that stale process-loss transition before reporting,
-                // issue promotion, or release of the unfinished source lease.
-                ...(status === "failed" && patch?.errorCode === "process_lost"
-                  ? [
-                    not(pendingNativeWorkspaceFinalizationCondition(db)),
-                    // Result publication locks and updates this heartbeat in
-                    // its transaction. If this UPDATE waited behind it, the
-                    // joined tables can still use the older statement snapshot;
-                    // the exact tuple fence also rejects that blocked writer.
-                    sql`${heartbeatRuns}.xmin::text = ${previous?.rowVersion ?? null}`,
-                  ]
-                  : []),
-                ...(cancellationCondition ? [cancellationCondition] : []),
-                ...(isHeartbeatRunTerminalStatus(status)
-                  ? [nativeRunnerOwnershipNotHeldCondition()]
-                  : []),
-              ),
-            )
-            .returning()
-            .then((rows) => rows[0] ?? null)
-            .catch((error: unknown) => {
-              if (cancellationCondition) rethrowNativeCancellationLockConflict(error);
-              throw error;
-            });
+        : await db.transaction(async (tx) => {
+            const row = await tx
+              .update(heartbeatRuns)
+              .set({
+                status,
+                ...patch,
+                executionStatusDeliveryId: randomUUID(),
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(heartbeatRuns.id, runId),
+                  inArray(heartbeatRuns.status, fromStatuses),
+                  // A result can commit after the orphan candidate was read.
+                  // Reject that stale process-loss transition before reporting,
+                  // issue promotion, or release of the unfinished source lease.
+                  ...(status === "failed" && patch?.errorCode === "process_lost"
+                    ? [
+                      not(pendingNativeWorkspaceFinalizationCondition(tx as unknown as typeof db)),
+                      // Result publication locks and updates this heartbeat in
+                      // its transaction. If this UPDATE waited behind it, the
+                      // joined tables can still use the older statement snapshot;
+                      // the exact tuple fence also rejects that blocked writer.
+                      sql`${heartbeatRuns}.xmin::text = ${previous?.rowVersion ?? null}`,
+                    ]
+                    : []),
+                  ...(cancellationCondition ? [cancellationCondition] : []),
+                  ...(isHeartbeatRunTerminalStatus(status)
+                    ? [nativeRunnerOwnershipNotHeldCondition()]
+                    : []),
+                ),
+              )
+              .returning()
+              .then((rows) => rows[0] ?? null)
+              .catch((error: unknown) => {
+                if (cancellationCondition) rethrowNativeCancellationLockConflict(error);
+                throw error;
+              });
+            if (row && managedRepairTerminalHaltAction(status) === "halt" && previousStatus?.status !== status) {
+              await noteManagedRepairRunFailure(tx as unknown as typeof db, row);
+            }
+            return row;
+          });
 
     if (updated) {
-      if ((status === "failed" || status === "timed_out") && previousStatus?.status !== status) {
-        await noteManagedRepairRunFailure(db, updated).catch((err) => {
-          logger.warn({ err, runId: updated.id }, "managed repair failure halt was not recorded");
-        });
-      }
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",

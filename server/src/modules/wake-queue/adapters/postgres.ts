@@ -13,6 +13,7 @@ import {
   chatActions,
   heartbeatRuns,
   issueComments,
+  issueManagedRepairs,
   issueRecoveryActions,
   issueRelations,
   issues,
@@ -443,6 +444,15 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       return updated ? toIssueSnapshot(updated as unknown as IssueRow) : null;
     },
 
+    async isEnrolledManagedRepair({ companyId, issueId }) {
+      const [row] = await tx
+        .select({ enrolled: issueManagedRepairs.enrolled })
+        .from(issueManagedRepairs)
+        .where(and(eq(issueManagedRepairs.companyId, companyId), eq(issueManagedRepairs.issueId, issueId)))
+        .limit(1);
+      return row?.enrolled === true;
+    },
+
     async claimDeferredWakeForPromotion({ companyId, wakeId, now }) {
       const claimed = await tx
         .update(agentWakeupRequests)
@@ -781,6 +791,16 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: HeartbeatRunRow
     issue.assigneeAgentId === run.agentId &&
     !["done", "cancelled"].includes(issue.status);
   if (!applies || isAcknowledgedNativeStop(run) || isAcknowledgedNativeReassignmentStop(run)) return false;
+  if (run.status === "cancelled") {
+    const [repair] = await tx
+      .select({ enrolled: issueManagedRepairs.enrolled })
+      .from(issueManagedRepairs)
+      .where(and(eq(issueManagedRepairs.companyId, issue.companyId), eq(issueManagedRepairs.issueId, issue.id)))
+      .limit(1);
+    // Board cancel writes the cancelled run before the issue status. Do not
+    // project this task to blocked, and let the drain retire its deferred wake.
+    if (repair?.enrolled) return false;
+  }
 
   const existing = await tx
     .select({ id: issueRecoveryActions.id, evidence: issueRecoveryActions.evidence })

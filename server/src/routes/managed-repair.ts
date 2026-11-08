@@ -43,8 +43,8 @@ const accountableSchema = z.object({
 }).strict();
 
 const savedResultSchema = z.object({
-  version: z.string().trim().min(1).max(500),
-  evidenceRef: z.string().trim().min(1).max(500),
+  version: z.string().uuid(),
+  evidenceRef: z.string().trim().regex(/^sha256:[a-f0-9]{64}$/i),
 }).strict();
 
 const verdictSchema = z.object({
@@ -52,8 +52,6 @@ const verdictSchema = z.object({
   artifactVersion: z.string().trim().min(1).max(500),
   kind: z.enum(["qa", "note"]),
   source: z.enum(["independent_review", "monitor"]),
-  reviewerUserId: z.string().trim().min(1).max(200).nullable().optional(),
-  reviewerAgentId: z.string().uuid().nullable().optional(),
 }).strict();
 
 const stageSchema = z.object({
@@ -62,7 +60,11 @@ const stageSchema = z.object({
 
 function boardAttempt(req: Parameters<typeof assertBoard>[0]): AuthorityAttempt {
   assertBoard(req);
-  const actor = boardManagedRepairActor({ type: req.actor.type, userId: req.actor.userId ?? null });
+  const actor = boardManagedRepairActor({
+    type: req.actor.type,
+    userId: req.actor.userId ?? null,
+    source: req.actor.source ?? null,
+  });
   if (!actor) throw forbidden("Board authority is required for managed repair.");
   return {
     authoritySource: EXPLICIT_BOARD_AUTHORITY_SOURCE,
@@ -102,7 +104,7 @@ export function managedRepairRoutes(db: Db) {
 
   router.post("/companies/:companyId/issues/:issueId/managed-repair/offline-dispatch", validate(offlineSchema), async (req, res) => {
     assertCompanyAccess(req, companyId(req));
-    assertBoard(req);
+    boardAttempt(req);
     res.status(201).json(await svc.dispatchOffline(companyId(req), issueId(req), { triggerId: req.body.triggerId }));
   });
 

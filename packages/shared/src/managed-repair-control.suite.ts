@@ -99,8 +99,11 @@ test("comment authorship and PASS text never count as board authority", () => {
     false,
   );
   assert.equal(explicitBoardAuthorityAccepted(boardAttempt()), true);
+  assert.equal(explicitBoardAuthorityAccepted(boardAttempt({ actorUserId: "local-implicit-board" })), false);
   assert.equal(boardManagedRepairActor({ type: "agent", userId: "spoofed-user" }), null);
-  assert.deepEqual(boardManagedRepairActor({ type: "board", userId: "board-user" }), {
+  assert.equal(boardManagedRepairActor({ type: "board", userId: "board-user" }), null);
+  assert.equal(boardManagedRepairActor({ type: "board", userId: "local-board", source: "local_implicit" }), null);
+  assert.deepEqual(boardManagedRepairActor({ type: "board", userId: "board-user", source: "board_key" }), {
     actorType: "user",
     actorUserId: "board-user",
   });
@@ -326,7 +329,7 @@ test("latest exact-version PASS supersedes a stale FAIL and monitor PASS notes a
   const applied = authorized({
     stage: "applied",
     savedResultVersion: saved,
-    savedResultEvidenceRef: "artifact://result-v2",
+    savedResultEvidenceRef: `sha256:${"ab".repeat(32)}`,
   });
   const verified = decideStageTransition(applied, "independently_verified", verdicts, boardAttempt());
   assert.equal(verified.allowed, true);
@@ -367,7 +370,11 @@ test("applied needs saved evidence and agents cannot self-approve", () => {
   assert.equal(done.code, "managed_repair_staged_as_complete");
   assert.equal(done.repair?.stage, "staged");
 
-  const self = decideVerdictRecord(staged, {
+  const self = decideVerdictRecord({
+    ...staged,
+    savedResultVersion: "result-v2",
+    savedResultEvidenceRef: `sha256:${"ab".repeat(32)}`,
+  }, {
     attempt: boardAttempt({ actorUserId: staged.ownerUserId! }),
     reviewerUserId: staged.ownerUserId,
     outcome: "PASS",
@@ -376,6 +383,16 @@ test("applied needs saved evidence and agents cannot self-approve", () => {
     source: "independent_review",
   });
   assert.equal(self.code, "managed_repair_self_approval");
+  const spoofedReviewer = decideVerdictRecord(staged, {
+    attempt: boardAttempt({ actorUserId: staged.ownerUserId! }),
+    reviewerUserId: "not-owner",
+    outcome: "PASS",
+    artifactVersion: "result-v2",
+    kind: "qa",
+    source: "independent_review",
+  });
+  assert.equal(spoofedReviewer.allowed, false);
+  assert.equal(spoofedReviewer.code, "managed_repair_reviewer_substitution");
   const agent = decideVerdictRecord(staged, {
     attempt: boardAttempt({ actorType: "agent", authorType: "user" }),
     reviewerUserId: "other-user",

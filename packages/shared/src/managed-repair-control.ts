@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 /**
  * Opt-in managed-repair control.
  *
@@ -160,7 +162,11 @@ function assertNever(value: never): never {
   throw new Error(`Unhandled managed repair variant: ${String(value)}`);
 }
 
+const SYNTHETIC_BOARD_ACTOR_IDS = new Set(["local-board", "local-implicit-board"]);
+const AUTHENTICATED_BOARD_SOURCES = new Set(["session", "board_key", "cloud_tenant", "cloud_tenant_auth"]);
+
 export function explicitBoardAuthorityAccepted(attempt: AuthorityAttempt): boolean {
+  const actorUserId = attempt.actorUserId?.trim() ?? "";
   const contaminated =
     attempt.commentBody != null ||
     attempt.authorType != null ||
@@ -169,20 +175,54 @@ export function explicitBoardAuthorityAccepted(attempt: AuthorityAttempt): boole
     attempt.issueStatus != null ||
     attempt.runId != null ||
     attempt.quotedInstruction != null;
-  if (contaminated) return false;
+  if (contaminated || SYNTHETIC_BOARD_ACTOR_IDS.has(actorUserId)) return false;
   return (
     attempt.authoritySource === EXPLICIT_BOARD_AUTHORITY_SOURCE &&
     attempt.actorType === "user" &&
-    Boolean(attempt.actorUserId?.trim())
+    actorUserId.length > 0
   );
 }
 
 export function boardManagedRepairActor(actor: {
   type?: string | null;
   userId?: string | null;
+  source?: string | null;
 }): { actorType: "user"; actorUserId: string } | null {
   if (actor.type !== "board") return null;
-  return { actorType: "user", actorUserId: actor.userId?.trim() || "local-implicit-board" };
+  if (!actor.source || !AUTHENTICATED_BOARD_SOURCES.has(actor.source)) return null;
+  const userId = actor.userId?.trim() ?? "";
+  if (!userId || SYNTHETIC_BOARD_ACTOR_IDS.has(userId)) return null;
+  return { actorType: "user", actorUserId: userId };
+}
+
+export function isExactManagedRepairEvidence(value: string | null | undefined): boolean {
+  return /^sha256:[a-f0-9]{64}$/.test(value?.trim().toLowerCase() ?? "");
+}
+
+function stableManagedRepairJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map((item) => stableManagedRepairJson(item)).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableManagedRepairJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+export function managedRepairResultChecksum(result: unknown): string {
+  return `sha256:${createHash("sha256").update(stableManagedRepairJson(result)).digest("hex")}`;
+}
+
+export function managedRepairTerminalHaltAction(status: string): "halt" | "stop_without_halt" | "none" {
+  switch (status) {
+    case "failed":
+    case "timed_out":
+      return "halt";
+    case "interrupted":
+    case "cancelled":
+      return "stop_without_halt";
+    default:
+      return "none";
+  }
 }
 
 export function isConcreteNextStep(text: string | null | undefined): boolean {
@@ -583,14 +623,37 @@ export function decideVerdictRecord(
       "A comment, status, run, or coordinator claim cannot record an independent verdict.",
     );
   }
-  if (input.attempt.actorType === "agent" || input.reviewerAgentId) {
+  const reviewerUserId = input.attempt.actorUserId?.trim() ?? "";
+  if (
+    (input.reviewerUserId?.trim() && input.reviewerUserId.trim() !== reviewerUserId) ||
+    input.reviewerAgentId
+  ) {
+    return decision(
+      repair,
+      false,
+      "managed_repair_reviewer_substitution",
+      "The reviewer is the authenticated principal. A supplied reviewer id is not authority.",
+    );
+  }
+  if (input.attempt.actorType === "agent") {
     return decision(repair, false, "managed_repair_self_approval", "The executing agent cannot approve its own repair.");
   }
-  if (repair.ownerUserId && input.reviewerUserId === repair.ownerUserId) {
+  if (repair.ownerUserId && reviewerUserId === repair.ownerUserId) {
     return decision(repair, false, "managed_repair_self_approval", "The repair owner cannot independently verify their own result.");
   }
-  if (!input.reviewerUserId?.trim() || !input.artifactVersion.trim()) {
+  if (!reviewerUserId || !input.artifactVersion.trim()) {
     return decision(repair, false, "managed_repair_missing_independent_verdict", "An independent verdict needs a reviewer and an exact artifact version.");
+  }
+  if (
+    !isExactManagedRepairEvidence(repair.savedResultEvidenceRef) ||
+    input.artifactVersion.trim() !== repair.savedResultVersion
+  ) {
+    return decision(
+      repair,
+      false,
+      "managed_repair_missing_saved_result",
+      "An independent verdict must name the persisted saved-result version and checksum.",
+    );
   }
   return decision(repair, true, "managed_repair_verdict_recorded", "Independent verdict recorded.");
 }
@@ -613,12 +676,12 @@ export function decideStageTransition(
     return decision({ ...repair, stage: target }, true, "managed_repair_stage_updated", "Stage updated.");
   }
   if (target === "applied") {
-    if (!repair.savedResultVersion?.trim() || !repair.savedResultEvidenceRef?.trim()) {
+    if (!repair.savedResultVersion?.trim() || !isExactManagedRepairEvidence(repair.savedResultEvidenceRef)) {
       return decision(
         repair,
         false,
         "managed_repair_missing_saved_result",
-        "Applied requires saved-result evidence for an exact version.",
+        "Applied requires the checksum of a persisted run result.",
       );
     }
     return decision({ ...repair, stage: target }, true, "managed_repair_stage_updated", "Applied.");
@@ -633,8 +696,8 @@ export function decideStageTransition(
         { stage: repair.stage },
       );
     }
-    if (!repair.savedResultVersion?.trim() || !repair.savedResultEvidenceRef?.trim()) {
-      return decision(repair, false, "managed_repair_missing_saved_result", "Verification requires saved-result evidence.");
+    if (!repair.savedResultVersion?.trim() || !isExactManagedRepairEvidence(repair.savedResultEvidenceRef)) {
+      return decision(repair, false, "managed_repair_missing_saved_result", "Verification requires the checksum of a persisted run result.");
     }
     const verdict = selectEffectiveVerdict(verdicts, repair.savedResultVersion);
     if (!verdict || verdict.outcome !== "PASS") {
