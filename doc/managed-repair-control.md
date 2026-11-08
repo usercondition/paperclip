@@ -78,8 +78,8 @@ Do this on a machine that is not the production Mac mini, or in a directory that
 
 1. Check out this branch. Confirm `git rev-parse HEAD` is this branch and `git merge-base --is-ancestor 82274853729f8c5b0f812da08595020f7eb64d66 HEAD` succeeds.
 2. Install and build from this checkout with Node `>=24.11.0`. Do not `npm install -g paperclipai`. This checkout used Node `v24.22.2`.
-3. Pack with the same steps the managed git install uses: `scripts/build-npm.sh --skip-checks --skip-typecheck`, then `pnpm -r --filter @paperclipai/server... build`, then pack every workspace package `resolveGitInstallWorkspacePackages` returns plus the CLI tarball. Packages with `bundleDependencies` go through `scripts/prepare-bundled-package.mjs`, then `npm pack --ignore-scripts` on that prepared directory. `@paperclipai/plugin-sdk` stays version `1.0.0` in source, while the other packed packages are `0.3.1`. The publish manifest rewrites `workspace:*` to the parent package version, so the server tarball depends on `@paperclipai/plugin-sdk@0.3.1` and a direct `npm install` of the packed set fails with `ETARGET`. Relabel only the packed plugin-sdk manifest to `0.3.1` before that install. The release script does the same alignment by giving every public package one version. Then `npm install` the CLI tarball and those workspace tarballs together, outside this repo, and record the checksum.
-4. Keep the npm tarball `paperclipai-2026.1012.0.tgz` (integrity above) as the rollback artifact. Do not install this branch by replacing files inside `~/.paperclip/cli/installs/npm/2026.1012.0`.
+3. Pack with `node scripts/pack-managed-payload.mjs <output-dir>` on Node `>=24.11.0`. The script gives every release package, including `@paperclipai/plugin-sdk`, the version in `scripts/managed-payload-version.json` (`2026.1012.1-managed.1`) before the build, then packs the server dependency closure. Packages with `bundleDependencies` go through `scripts/prepare-bundled-package.mjs` and `npm pack --ignore-scripts`. The script does not edit a tarball after `npm pack`. It restores the checkout when it finishes. `npm install` the CLI tarball and the workspace tarballs together, outside this repo. Do not publish them to the public registry.
+4. Keep the installed `2026.1012.0` payload as the rollback target. Install this payload into a new directory, `~/.paperclip/cli/installs/npm/2026.1012.1-managed.1`. Do not replace files inside `~/.paperclip/cli/installs/npm/2026.1012.0`.
 
 ## Backup, install, and rollback
 
@@ -93,12 +93,13 @@ Backup, before any install:
 4. Copy `~/.paperclip/cli/installs/npm/2026.1012.0` and `~/.local/bin/paperclipai`.
 5. Confirm the dump restores on a scratch database before you change the live files.
 
-Install, later:
+Install, later, only after review accepts the payload:
 
-1. Point the managed CLI pin at the packed tarball from this branch. Do not edit files inside the installed `2026.1012.0` directory.
-2. Apply migration `0335` with that build's migrator.
-3. Start the instance only after the migration succeeds.
-4. Enroll one synthetic issue. Confirm `liveHold` is true and a comment does not start a run.
+1. Read the existing shim at `~/.local/bin/paperclipai`. Run the Node binary named in its `PATH=` line with `-v`. It must print `>=24.11.0`. If it does not, leave the current payload in place.
+2. Install the packed tarballs into a new directory, `~/.paperclip/cli/installs/npm/2026.1012.1-managed.1`, with `npm install --prefix <that-directory> --no-audit --no-fund <every tarball>`. Do not edit files inside `~/.paperclip/cli/installs/npm/2026.1012.0`.
+3. Point `~/.paperclip/cli/current` at that new directory and set `install.json` to `source: npm`, `channel: pinned`, `version: 2026.1012.1-managed.1`, with `previous[0]` still naming the `2026.1012.0` payload. A pinned channel does not float on a later `paperclipai update`.
+4. The first start applies migration `0335`. Start only after that migration succeeds.
+5. Enroll one synthetic issue. Confirm `liveHold` is true and a comment does not start a run.
 
 Rollback:
 

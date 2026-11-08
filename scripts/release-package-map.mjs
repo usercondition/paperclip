@@ -343,4 +343,5 @@ export {
   findUnpublishableWorkspaceEdges,
   getReleasePackages,
   loadReleaseManifest,
+  setVersion,
 };
