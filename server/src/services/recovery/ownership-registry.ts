@@ -41,6 +41,7 @@ import {
 import { ephemeralServerEnabled } from "../ephemeral-server-mode.js";
 import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "../environment-lease-controller.js";
 import { settleEnvironmentRunLease } from "../environment-run-lease-settlement.js";
+import { settleSandboxCreationIntent } from "../sandbox-creation-intent-settlement.js";
 
 /**
  * Registry of ownable record kinds (plan section C).
@@ -537,13 +538,18 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
 
   // Environments and sandboxes
   {
+    // Shared path since Phase 2: a creator proven gone makes its intent due
+    // now; creation recovery then reconciles it with the provider. An intent
+    // whose creator is already marked lost belongs to that recovery deadline.
     id: "sandbox_creation_intent", title: "Sandbox creation intent", obligation: "ownership", storage: "database",
-    settle: null, invariantChecks: [1, 2, 3, 7],
+    settle: settleSandboxCreationIntent, invariantChecks: [1, 2, 3, 7],
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: sandboxCreationOperations.id, companyId: sandboxCreationOperations.companyId,
         runId: sandboxCreationOperations.runId, issueId: sandboxCreationOperations.issueId,
         metadata: sandboxCreationOperations.metadata, updatedAt: sandboxCreationOperations.updatedAt })
-        .from(sandboxCreationOperations).where(eq(sandboxCreationOperations.state, "pending")).orderBy(asc(sandboxCreationOperations.id)).limit(limit + 1).offset(offset);
+        .from(sandboxCreationOperations).where(and(eq(sandboxCreationOperations.state, "pending"),
+          sql`coalesce(${sandboxCreationOperations.metadata}->>'creationControllerLost', '') <> 'true'`))
+        .orderBy(asc(sandboxCreationOperations.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: row.runId, issueId: row.issueId,
