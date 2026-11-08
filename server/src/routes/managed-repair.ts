@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import {
@@ -11,7 +11,7 @@ import { validate } from "../middleware/validate.js";
 import { managedRepairControlService } from "../services/managed-repair-control.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 
-const scopeSchema = z.enum(["read", "mutate_status", "checkout", "execute_next_step"]);
+const scopeSchema = z.enum(["read", "offline", "mutate_status", "checkout", "execute_next_step"]);
 const blockerSchema = z.object({
   evidenceRef: z.string().trim().min(1).max(500),
   summary: z.string().trim().min(1).max(4_000),
@@ -32,6 +32,7 @@ const grantSchema = z.object({
 }).strict();
 
 const holdSchema = z.object({ hold: z.boolean() }).strict();
+const offlineSchema = z.object({ triggerId: z.string().trim().min(1).max(200) }).strict();
 
 const accountableSchema = z.object({
   ownerUserId: z.string().trim().min(1).max(200).nullable().optional(),
@@ -73,8 +74,14 @@ function boardAttempt(req: Parameters<typeof assertBoard>[0]): AuthorityAttempt 
 export function managedRepairRoutes(db: Db) {
   const router = Router();
   const svc = managedRepairControlService(db);
-  const companyId = (req: { params: Record<string, string> }) => req.params.companyId as string;
-  const issueId = (req: { params: Record<string, string> }) => req.params.issueId as string;
+  const companyId = (req: Request) => {
+    const value = req.params.companyId;
+    return typeof value === "string" ? value : "";
+  };
+  const issueId = (req: Request) => {
+    const value = req.params.issueId;
+    return typeof value === "string" ? value : "";
+  };
 
   router.get("/companies/:companyId/issues/:issueId/managed-repair", async (req, res) => {
     assertCompanyAccess(req, companyId(req));
@@ -91,6 +98,12 @@ export function managedRepairRoutes(db: Db) {
   router.post("/companies/:companyId/issues/:issueId/managed-repair/grant", validate(grantSchema), async (req, res) => {
     assertCompanyAccess(req, companyId(req));
     res.json(await svc.grant(companyId(req), issueId(req), { ...req.body, attempt: boardAttempt(req) }));
+  });
+
+  router.post("/companies/:companyId/issues/:issueId/managed-repair/offline-dispatch", validate(offlineSchema), async (req, res) => {
+    assertCompanyAccess(req, companyId(req));
+    assertBoard(req);
+    res.status(201).json(await svc.dispatchOffline(companyId(req), issueId(req), { triggerId: req.body.triggerId }));
   });
 
   router.post("/companies/:companyId/issues/:issueId/managed-repair/hold", validate(holdSchema), async (req, res) => {

@@ -1059,6 +1059,11 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             .then((rows) => rows[0] ?? null);
 
     if (updated) {
+      if ((status === "failed" || status === "timed_out") && previousStatus?.status !== status) {
+        await noteManagedRepairRunFailure(db, updated).catch((err) => {
+          logger.warn({ err, runId: updated.id }, "managed repair failure halt was not recorded");
+        });
+      }
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",
@@ -1066,11 +1071,6 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       });
       publishRunLifecyclePluginEvent(updated);
       emitTerminalAgentTaskRun(updated, previousStatus?.status ?? null);
-      if ((status === "failed" || status === "timed_out") && previousStatus?.status !== status) {
-        await noteManagedRepairRunFailure(db, updated).catch((err) => {
-          logger.warn({ err, runId: updated.id }, "managed repair failure halt was not recorded");
-        });
-      }
     }
 
     return updated;
@@ -1188,6 +1188,11 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             });
 
     if (updated) {
+      if ((status === "failed" || status === "timed_out") && previousStatus?.status !== status) {
+        await noteManagedRepairRunFailure(db, updated).catch((err) => {
+          logger.warn({ err, runId: updated.id }, "managed repair failure halt was not recorded");
+        });
+      }
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",
@@ -1195,11 +1200,6 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       });
       publishRunLifecyclePluginEvent(updated);
       emitTerminalAgentTaskRun(updated, previousStatus?.status ?? null, failureReport);
-      if ((status === "failed" || status === "timed_out") && previousStatus?.status !== status) {
-        await noteManagedRepairRunFailure(db, updated).catch((err) => {
-          logger.warn({ err, runId: updated.id }, "managed repair failure halt was not recorded");
-        });
-      }
       return { run: updated, updated: true as const };
     }
 
@@ -2380,7 +2380,9 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         if (isManagedRepairDispatchDenial(err)) return null;
         throw err;
       }
-      if (managedRepairClaimId) retryContextSnapshot.managedRepairClaimId = managedRepairClaimId;
+      if (managedRepairClaimId) {
+        (retryContextSnapshot as { managedRepairClaimId?: string }).managedRepairClaimId = managedRepairClaimId;
+      }
 
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)

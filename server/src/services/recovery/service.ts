@@ -3239,7 +3239,7 @@ export function recoveryService(
           scheduledRun = enqueuedRun ?? (await findScheduledRun());
           created = Boolean(enqueuedRun);
         } else {
-          scheduledRun = await db.transaction(async (tx) => {
+          const repairedRun = await db.transaction(async (tx) => {
             try {
               const gate = await evaluateManagedRepairDispatch(tx as unknown as Db, {
                 companyId: input.issue.companyId,
@@ -3304,6 +3304,8 @@ export function recoveryService(
               .where(eq(agentWakeupRequests.id, wakeup.id));
             return run;
           });
+          if (!repairedRun) return null;
+          scheduledRun = repairedRun;
           created = true;
         }
       } catch (error) {

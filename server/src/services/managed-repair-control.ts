@@ -20,6 +20,7 @@ import {
   decideStageTransition,
   decideVerdictRecord,
   idleNextStepDue,
+  managedRepairIntentKey,
   resolveManagedRepairWakeTrigger,
   type AuthorityAttempt,
   type ManagedRepairDatabase,
@@ -247,9 +248,31 @@ async function loadRepair(dbOrTx: Db, companyId: string, issueId: string) {
   return mapRepair(row);
 }
 
+export async function previewManagedRepairIssueMutation(
+  dbOrTx: Db,
+  input: {
+    companyId: string;
+    issueId: string;
+    fromStatus: string;
+    toStatus: string;
+    action: "status" | "checkout";
+    humanStop?: boolean;
+  },
+) {
+  const repair = await loadRepair(dbOrTx, input.companyId, input.issueId);
+  return decideManagedRepairIssueMutation(repair, input);
+}
+
 export async function assertManagedRepairIssueMutation(
   dbOrTx: Db,
-  input: { companyId: string; issueId: string; fromStatus: string; toStatus: string; action: "status" | "checkout" },
+  input: {
+    companyId: string;
+    issueId: string;
+    fromStatus: string;
+    toStatus: string;
+    action: "status" | "checkout";
+    humanStop?: boolean;
+  },
 ) {
   const repair = await loadRepair(dbOrTx, input.companyId, input.issueId);
   const decision = decideManagedRepairIssueMutation(repair, input);
@@ -282,6 +305,7 @@ export async function evaluateManagedRepairDispatch(
     triggerId: string;
     commentBody?: string | null;
     authorType?: string | null;
+    disposition?: "live" | "offline";
   },
   nested = false,
 ) {
@@ -291,6 +315,44 @@ export async function evaluateManagedRepairDispatch(
   });
   if (!admission.allowed) throwDecision(admission);
   return admission;
+}
+
+export async function planManagedRepairInFlightWake(
+  dbOrTx: Db,
+  input: {
+    companyId: string;
+    issueId: string;
+    source: ManagedRepairWakeSource;
+    triggerId: string;
+  },
+): Promise<"ordinary" | "join" | "defer"> {
+  const repair = await loadRepair(dbOrTx, input.companyId, input.issueId);
+  if (!repair?.enrolled) return "ordinary";
+  const decision = decideManagedRepairIssueMutation(repair, {
+    fromStatus: "todo",
+    toStatus: "in_progress",
+    action: "status",
+  });
+  throwDecision(decision);
+  if (!repair.nextStepId?.trim()) return "defer";
+  const intentKey = managedRepairIntentKey({
+    issueId: repair.issueId,
+    nextStepId: repair.nextStepId.trim(),
+    authorizationVersion: repair.authorizationVersion,
+    source: input.source,
+    triggerId: input.triggerId,
+    lastDispatchAt: repair.lastDispatchAt,
+    disposition: "live",
+  });
+  const [claim] = await dbOrTx
+    .select({ id: managedRepairWakeClaims.id })
+    .from(managedRepairWakeClaims)
+    .where(and(
+      eq(managedRepairWakeClaims.issueId, repair.issueId),
+      eq(managedRepairWakeClaims.intentKey, intentKey),
+    ))
+    .limit(1);
+  return claim ? "join" : "defer";
 }
 
 export async function noteManagedRepairRunFailure(
@@ -396,6 +458,19 @@ export function managedRepairControlService(db: Db) {
       const repair = assertGranted(decision);
       await db.update(issueManagedRepairs).set(repairPatch(repair)).where(eq(issueManagedRepairs.id, repair.id));
       return repair;
+    },
+    async dispatchOffline(companyId: string, issueId: string, input: { triggerId: string }) {
+      const current = await loadRepair(db, companyId, issueId);
+      if (!current?.enrolled) throw unprocessable("Managed repair is not enrolled.", { code: "managed_repair_not_enrolled" });
+      const admission = await evaluateManagedRepairDispatch(db, {
+        companyId,
+        issueId,
+        source: "direct",
+        triggerId: input.triggerId,
+        disposition: "offline",
+      });
+      const after = await loadRepair(db, companyId, issueId);
+      return { admission, repair: after };
     },
     async setHold(companyId: string, issueId: string, input: { hold: boolean; attempt: AuthorityAttempt }) {
       const current = await loadRepair(db, companyId, issueId);

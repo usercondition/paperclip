@@ -28,15 +28,19 @@ The source package version in git is `0.3.1`. The release workflow stamps `2026.
 
 Enrollment starts with `liveHold = true`. A hold stays until an explicit board grant or hold call clears it. Issue status changes do not clear it. Comment text, `authorType`, a reviewer PASS, a run id, a quoted instruction, and a coordinator claim do not grant scope and do not clear a hold.
 
-Execution (`todo`, `in_progress`, checkout, and every wake) needs all of the following:
+Live execution (`todo`, `in_progress`, checkout, and a live wake) needs all of the following:
 
 - a durable owner (`ownerUserId` or `ownerAgentId`)
 - a concrete next step (trimmed length at least 8, and it contains whitespace)
 - no evidenced blocker
 - an active authorization (`explicit_board_grant`, version greater than 0, granted by a user)
 - `liveHold = false`
-- scope that allows the action
+- scope that allows the live action (`execute_next_step`, `mutate_status`, or `checkout`)
 - dispatch not halted
+
+A live hold denies that live work only. It does not block a same-status update, a non-executing status such as `in_review` or `blocked`, or a dispatch whose grant scope is `read` or `offline`. Those paths leave `liveHold` true. `done` still needs independent QA of the exact saved result. A board operator can set `cancelled` without that evidence. An agent cancel still needs the verified stage. The route sets the board stop only from `actor.type === "board"`. A request body cannot set it.
+
+An in-flight managed-repair wake does not merge a second trigger into the running task, and it does not queue a second run. The same intent joins that run and does not change its context. A different intent is stored as `deferred_issue_execution` and is claimed once when it is later promoted. This also applies when the in-flight run is already running and a comment would otherwise queue a follow-up. Ordinary issues keep the previous coalesce and follow-up behavior.
 
 Scope names:
 
@@ -54,7 +58,7 @@ Board routes live under `/api/companies/:companyId/issues/:issueId/managed-repai
 
 `MANAGED_REPAIR_DISPATCH_GATE_SCOPE` is `native_paperclip_issue_mutation_and_wake`.
 
-The gate does not stop shell commands, browser actions, or other side effects outside Paperclip issue mutation and heartbeat/wake dispatch. It is not marketplace-wide protection. A database superuser can still write rows directly. A second authorized wake can still coalesce into one in-flight run when the queue skips a second insert. Unassigned idle next steps are not woken, because there is no assignee. Timer heartbeats with no issue id are outside the gate. Agents cannot enroll or grant scope.
+The gate does not stop shell commands, browser actions, or other side effects outside Paperclip issue mutation and heartbeat/wake dispatch. It is not marketplace-wide protection. A database superuser can still write rows directly. A second managed-repair trigger does not merge into an in-flight run. The same intent joins that run without changing its context. A different intent is deferred and claimed once on promotion. Unassigned idle next steps are not woken, because there is no assignee. Timer heartbeats with no issue id are outside the gate. Agents cannot enroll or grant scope.
 
 ## Schema
 
@@ -73,11 +77,11 @@ Rollback of the application can leave the tables in place. Do not drop them as t
 Do this on a machine that is not the production Mac mini, or in a directory that is not `~/.paperclip`.
 
 1. Check out this branch. Confirm `git rev-parse HEAD` is this branch and `git merge-base --is-ancestor 82274853729f8c5b0f812da08595020f7eb64d66 HEAD` succeeds.
-2. Install and build from this checkout. Do not `npm install -g paperclipai`.
+2. Install and build from this checkout. Do not `npm install -g paperclipai`. The repo engines field asks for Node `>=24.11.0`. This checkout installed with Node `v22.23.4` because `.npmrc` does not set `engine-strict`. Use Node 24 for the package you install.
 3. Pack the built CLI with the package manager this repo uses (`pnpm pack` in `cli/` after the repo build). Record the tarball checksum.
 4. Keep the npm tarball `paperclipai-2026.1012.0.tgz` (integrity above) as the rollback artifact.
 
-This repository checkout did not run `pnpm install`, `pnpm build`, or a package pack. Those steps need the full toolchain and were not required to prove the policy tests below.
+`pnpm install --frozen-lockfile` completed on this checkout. `pnpm --filter @paperclipai/shared typecheck` and `pnpm --filter @paperclipai/db typecheck` passed. The database check includes migration numbering and migration safety. `pnpm --filter @paperclipai/server typecheck` compiled the runner, then `tsc` reported the errors fixed in this revision. `pnpm --dir server exec tsc --noEmit --pretty false` then passed. A full `pnpm build` and `pnpm pack` were not run.
 
 ## Backup, install, and rollback
 
@@ -107,12 +111,23 @@ Rollback:
 
 ## Tests run here
 
-Command:
+Policy suite, 14 passed, 0 failed, Node `v22.23.4`:
 
 ```sh
 node --experimental-strip-types --test packages/shared/src/managed-repair-control.suite.ts
+pnpm --filter @paperclipai/shared exec tsc --ignoreConfig --noEmit --allowImportingTsExtensions --module nodenext --moduleResolution nodenext --target es2022 --strict --skipLibCheck --types node src/managed-repair-control.suite.ts
 ```
 
-Result: 12 passed, 0 failed. Node `v22.23.4`. No `node_modules` install. The suite covers forged authority, hold versus status flip, missing owner/step/blocker, ordinary issues, authorized work, concurrent replay, failure halt, stale FAIL versus exact PASS, self-approval, the 20 minute idle threshold, and source hooks for the service and wake entrypoints.
+The suite file imports `./managed-repair-control.ts` so Node can run it without a build. `packages/shared/tsconfig.json` excludes `src/**/*.suite.ts` so the package typecheck keeps the normal `.js` import rule.
 
-Not run: `pnpm install`, `pnpm verify`, `pnpm -r typecheck`, embedded Postgres, HTTP route smoke, and any check against the installed npm payload or the production database. Independent review and a real install check come after this pull request.
+Isolated Postgres, HTTP, and service tests, 6 passed, 0 failed:
+
+```sh
+pnpm install --frozen-lockfile
+node scripts/ensure-plugin-build-deps.mjs
+pnpm --dir server exec vitest run --config vitest.config.ts src/services/managed-repair-control.integration.test.ts
+```
+
+That file applies migration `0335` on a scratch database, checks that it follows journal entry `0334_rare_slipstream` from commit `82274853729f8c5b0f812da08595020f7eb64d66`, and checks that `ALTER TABLE` touches only the three new tables. It uses `deploymentMode: "authenticated"`. A missing bearer is 401. An agent key cannot enroll. A body with `authorType` or comment text is 400. A board key can enroll. `read` and `offline` scope can dispatch while `liveHold` stays true, and that dispatch creates no heartbeat run. Checkout and `in_progress` stay denied. A user comment does not change `authorizationVersion`. Board `cancelled` does not need saved-result evidence and does not clear the hold. `done` still needs independent QA. A succeeded run does not halt. A later `failed` run halts once. A repeated failure note does not increment again. An enqueue denial does not halt. Two concurrent claim transactions leave one row and one 409 replay. A second comment on a queued or running managed-repair run does not create a second run and does not change the in-flight context. The same comment joins. A different comment is `deferred_issue_execution`. An ordinary issue still coalesces into one run.
+
+Not run: `pnpm verify`, `pnpm -r typecheck`, `pnpm build`, `pnpm pack`, and any check of the installed npm payload or the production database. No production access, restart, deploy, or merge was performed. Independent review and a real install check come after this pull request.

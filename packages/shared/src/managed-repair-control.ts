@@ -282,13 +282,35 @@ function startWorkBlocker(
   return null;
 }
 
+function offlineDispatchBlocker(repair: ManagedRepairState): ManagedRepairDecision | null {
+  if (!authorizationIsActive(repair)) {
+    return decision(
+      repair,
+      false,
+      "managed_repair_not_accountable",
+      "Offline dispatch needs an explicit board scope. A live hold does not grant it.",
+    );
+  }
+  const scope = repair.authorizedScope;
+  if (!scope.includes("read") && !scope.includes("offline")) {
+    return decision(
+      repair,
+      false,
+      "managed_repair_scope_denied",
+      "Offline dispatch needs read or offline scope and does not lift a live hold.",
+      { action: "offline" },
+    );
+  }
+  return null;
+}
+
 export function projectRepairAfterIssueStatusChange(repair: ManagedRepairState): ManagedRepairState {
   return repair;
 }
 
 export function decideManagedRepairIssueMutation(
   repair: ManagedRepairState | null,
-  input: { fromStatus: string; toStatus: string; action: "status" | "checkout" },
+  input: { fromStatus: string; toStatus: string; action: "status" | "checkout"; humanStop?: boolean },
 ): ManagedRepairDecision {
   if (!repair?.enrolled) {
     return decision(null, true, "managed_repair_not_enrolled", "Ordinary issue; managed repair is not enrolled.");
@@ -296,6 +318,14 @@ export function decideManagedRepairIssueMutation(
   const unchanged = projectRepairAfterIssueStatusChange(repair);
   if (input.action === "status" && input.fromStatus === input.toStatus) {
     return decision(unchanged, true, "managed_repair_read_only", "Non-executing update leaves the hold unchanged.");
+  }
+  if (input.toStatus === "cancelled" && input.humanStop) {
+    return decision(
+      unchanged,
+      true,
+      "managed_repair_human_stop",
+      "A board operator cancelled this repair. Saved-result evidence is not required, and the live hold stays unchanged.",
+    );
   }
   if (input.toStatus === "done" || input.toStatus === "cancelled") {
     if (unchanged.stage !== "independently_verified" && unchanged.stage !== "closed") {
@@ -361,6 +391,7 @@ export function managedRepairIntentKey(input: {
   source: ManagedRepairWakeSource;
   triggerId: string;
   lastDispatchAt?: string | null;
+  disposition?: "live" | "offline";
 }): string {
   const idleWindow = input.source === "idle_next_step" ? input.lastDispatchAt ?? "none" : "";
   return [
@@ -370,6 +401,7 @@ export function managedRepairIntentKey(input: {
     input.source,
     input.triggerId,
     idleWindow,
+    input.disposition ?? "live",
   ].join("|");
 }
 
@@ -394,6 +426,7 @@ export async function admitManagedRepairWake(
     now?: string;
     commentBody?: string | null;
     authorType?: string | null;
+    disposition?: "live" | "offline";
   },
 ): Promise<WakeAdmission> {
   return db.transaction(async (tx) => {
@@ -423,18 +456,20 @@ export async function admitManagedRepairWake(
     // Comment text and authorType are never read as authority.
     void input.commentBody;
     void input.authorType;
-    const blocked = startWorkBlocker(repair, "wake");
+    const disposition = input.disposition ?? "live";
+    const blocked = disposition === "offline" ? offlineDispatchBlocker(repair) : startWorkBlocker(repair, "wake");
     if (blocked) {
       return { ...blocked, claimId: null };
     }
     const now = input.now ?? new Date().toISOString();
     const intentKey = managedRepairIntentKey({
       issueId: repair.issueId,
-      nextStepId: repair.nextStepId!.trim(),
+      nextStepId: repair.nextStepId?.trim() || "offline",
       authorizationVersion: repair.authorizationVersion,
       source: input.source,
       triggerId: input.triggerId,
       lastDispatchAt: repair.lastDispatchAt,
+      disposition,
     });
     const inserted = await tx.insertClaim({
       id: input.claimId,

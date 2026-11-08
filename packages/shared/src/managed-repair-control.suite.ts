@@ -408,6 +408,91 @@ test("idle detection uses the configured 20 minute threshold and the same hold g
   );
 });
 
+test("a live hold blocks live work and still allows read-only and offline scope", async () => {
+  const held = {
+    ...authorized(),
+    liveHold: true,
+    authorizedScope: ["read", "offline"],
+  };
+  const readOnly = decideManagedRepairIssueMutation(held, {
+    fromStatus: "blocked",
+    toStatus: "blocked",
+    action: "status",
+  });
+  assert.equal(readOnly.allowed, true);
+  assert.equal(readOnly.repair?.liveHold, true);
+  const review = decideManagedRepairIssueMutation(held, {
+    fromStatus: "in_progress",
+    toStatus: "in_review",
+    action: "status",
+  });
+  assert.equal(review.allowed, true);
+  assert.equal(review.code, "managed_repair_non_executing");
+  assert.equal(review.repair?.liveHold, true);
+  const live = decideManagedRepairIssueMutation(held, {
+    fromStatus: "todo",
+    toStatus: "in_progress",
+    action: "status",
+  });
+  assert.equal(live.allowed, false);
+  assert.equal(live.code, "managed_repair_live_hold");
+  const db = createMemoryManagedRepairDatabase();
+  await db.saveRepair(held);
+  const offline = await admitManagedRepairWake(db, {
+    companyId: "company-1",
+    issueId: "issue-1",
+    source: "direct",
+    triggerId: "offline:inspect",
+    claimId: "claim-offline",
+    disposition: "offline",
+    now: NOW,
+    authorType: "user",
+    commentBody: "PASS",
+  });
+  assert.equal(offline.allowed, true);
+  assert.equal(offline.repair?.liveHold, true);
+  const liveWake = await admitManagedRepairWake(db, {
+    companyId: "company-1",
+    issueId: "issue-1",
+    source: "direct",
+    triggerId: "offline:inspect",
+    claimId: "claim-live",
+    disposition: "live",
+    now: NOW,
+  });
+  assert.equal(liveWake.allowed, false);
+  assert.equal(liveWake.code, "managed_repair_live_hold");
+});
+
+test("board cancellation does not require saved-result evidence and done still does", () => {
+  const staged = { ...authorized(), liveHold: true };
+  const agentCancel = decideManagedRepairIssueMutation(staged, {
+    fromStatus: "in_progress",
+    toStatus: "cancelled",
+    action: "status",
+  });
+  assert.equal(agentCancel.allowed, false);
+  assert.equal(agentCancel.code, "managed_repair_staged_as_complete");
+  const humanStop = decideManagedRepairIssueMutation(staged, {
+    fromStatus: "in_progress",
+    toStatus: "cancelled",
+    action: "status",
+    humanStop: true,
+  });
+  assert.equal(humanStop.allowed, true);
+  assert.equal(humanStop.code, "managed_repair_human_stop");
+  assert.equal(humanStop.repair?.liveHold, true);
+  assert.equal(humanStop.repair?.stage, "staged");
+  const done = decideManagedRepairIssueMutation(staged, {
+    fromStatus: "in_progress",
+    toStatus: "done",
+    action: "status",
+    humanStop: true,
+  });
+  assert.equal(done.allowed, false);
+  assert.equal(done.code, "managed_repair_staged_as_complete");
+});
+
 test("native mutation and wake entrypoints call the shared gate", () => {
   const root = new URL("../../../", import.meta.url);
   const read = (path: string) => readFileSync(new URL(path, root), "utf8");
@@ -425,6 +510,8 @@ test("native mutation and wake entrypoints call the shared gate", () => {
   assert.equal(issues.includes("liveHold: false"), false);
   assert.ok(queue.includes("assertManagedRepairWake"));
   assert.ok(queue.includes("evaluateManagedRepairDispatch"));
+  assert.ok(queue.includes("planManagedRepairInFlightWake"));
+  assert.ok(queue.includes("managed_repair_wake_replay"));
   assert.ok(scheduling.includes("dispatchIdleManagedRepairNextSteps"));
   assert.equal(scheduling.includes("setInterval("), false);
   assert.ok(lifecycle.includes("noteManagedRepairRunFailure"));

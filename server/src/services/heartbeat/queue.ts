@@ -96,6 +96,7 @@ import {
   assertManagedRepairWake,
   classifyManagedRepairWakeSource,
   evaluateManagedRepairDispatch,
+  planManagedRepairInFlightWake,
   resolveManagedRepairWakeTrigger,
 } from "../managed-repair-control.js";
 import { logger } from "../../middleware/logger.js";
@@ -3661,6 +3662,58 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             // deferred wake that could later replay the same reconciliation.
             if (reconciledSourceRunId) return { kind: "deferred" as const };
 
+            const managedRepairPlan = await planManagedRepairInFlightWake(tx as unknown as Db, {
+              companyId: agent.companyId,
+              issueId,
+              source: classifyManagedRepairWakeSource({
+                reason,
+                contextSource: enrichedContextSnapshot.source,
+                invocationSource: source,
+              }),
+              triggerId: resolveManagedRepairWakeTrigger({
+                explicit: typeof payload?.managedRepairTriggerId === "string" ? payload.managedRepairTriggerId : null,
+                commentId: wakeCommentId,
+                idempotencyKey: opts.idempotencyKey ?? null,
+                reason,
+              }),
+            });
+            if (managedRepairPlan === "join") {
+              await tx.insert(agentWakeupRequests).values({
+                ...durableReceiptFields,
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason,
+                payload,
+                status: "coalesced",
+                coalescedCount: 1,
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+                runId: activeExecutionRun.id,
+                finishedAt: new Date(),
+                error: "managed_repair_wake_replay",
+              });
+              return { kind: "coalesced" as const, run: activeExecutionRun };
+            }
+            if (managedRepairPlan === "defer") {
+              await tx.insert(agentWakeupRequests).values({
+                ...durableReceiptFields,
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason,
+                payload,
+                status: "deferred_issue_execution",
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+              });
+              return { kind: "deferred" as const };
+            }
+
             // Offer the input to the active Dot, but keep a durable queued wake
             // until it reads the comment. A finish racing the event tick must
             // leave unread input available for the next assignment.
@@ -3999,7 +4052,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                   )
                   .orderBy(asc(agentWakeupRequests.requestedAt))
               : [];
-          const adoptedComments = pendingComments.filter((wake) => {
+          let adoptedComments = pendingComments.filter((wake) => {
             if (wake.id === executionWaitRequestId) return true;
             if (wake.id === opts.queuedCommentInterruptId || wake.id === opts.queuedCommentRequestId) return true;
             const deferredPayload = parseObject(wake.payload);
@@ -4031,6 +4084,22 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               agent.companyId, issueId, agentId, adoptedCommentIds);
           }
           if (issueId) {
+            const managedRepairPlan = await planManagedRepairInFlightWake(tx as unknown as Db, {
+              companyId: agent.companyId,
+              issueId,
+              source: classifyManagedRepairWakeSource({
+                reason,
+                contextSource: enrichedContextSnapshot.source,
+                invocationSource: source,
+              }),
+              triggerId: resolveManagedRepairWakeTrigger({
+                explicit: typeof payload?.managedRepairTriggerId === "string" ? payload.managedRepairTriggerId : null,
+                commentId: wakeCommentId,
+                idempotencyKey: opts.idempotencyKey ?? null,
+                reason,
+              }),
+            });
+            if (managedRepairPlan !== "ordinary") adoptedComments = [];
             const managedRepairDispatch = await evaluateManagedRepairDispatch(tx as unknown as Db, {
               companyId: agent.companyId,
               issueId,
@@ -4220,6 +4289,59 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     );
 
     if (coalescedTargetRun) {
+      const managedRepairPlan = issueId
+        ? await planManagedRepairInFlightWake(db, {
+            companyId: agent.companyId,
+            issueId,
+            source: classifyManagedRepairWakeSource({
+              reason,
+              contextSource: enrichedContextSnapshot.source,
+              invocationSource: source,
+            }),
+            triggerId: resolveManagedRepairWakeTrigger({
+              explicit: typeof payload?.managedRepairTriggerId === "string" ? payload.managedRepairTriggerId : null,
+              commentId: wakeCommentId,
+              idempotencyKey: opts.idempotencyKey ?? null,
+              reason,
+            }),
+          })
+        : "ordinary";
+      if (managedRepairPlan === "join") {
+        await db.insert(agentWakeupRequests).values({
+          ...durableReceiptFields,
+          companyId: agent.companyId,
+          agentId,
+          source,
+          triggerDetail,
+          reason,
+          payload,
+          status: "coalesced",
+          coalescedCount: 1,
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          idempotencyKey: opts.idempotencyKey ?? null,
+          runId: coalescedTargetRun.id,
+          finishedAt: new Date(),
+          error: "managed_repair_wake_replay",
+        });
+        return coalescedTargetRun;
+      }
+      if (managedRepairPlan === "defer") {
+        await db.insert(agentWakeupRequests).values({
+          ...durableReceiptFields,
+          companyId: agent.companyId,
+          agentId,
+          source,
+          triggerDetail,
+          reason,
+          payload,
+          status: "deferred_issue_execution",
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          idempotencyKey: opts.idempotencyKey ?? null,
+        });
+        return null;
+      }
       const mergedContextSnapshot = mergeCoalescedContextSnapshot(
         coalescedTargetRun.contextSnapshot,
         enrichedContextSnapshot,

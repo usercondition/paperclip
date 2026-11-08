@@ -712,6 +712,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
           sessionBefore: null,
           now: new Date(),
         });
+        if (!promoted) throw new Error("expected a promoted run");
         finalizedRunIds.push(promoted.id);
       };
       // The issue's execution lock is free; this call takes it.

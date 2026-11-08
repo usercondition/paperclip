@@ -257,7 +257,7 @@ export async function prepareConversationTurn(
         context.conversationReplayThroughCommentId = replayThrough?.id ?? commentId;
       }
     }
-    await assertManagedRepairIssueMutation(tx as Db, {
+    await assertManagedRepairIssueMutation(tx as unknown as Db, {
       companyId: issue.companyId,
       issueId: issue.id,
       fromStatus: issue.status,

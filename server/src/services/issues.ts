@@ -10835,6 +10835,7 @@ export function issueService(db: Db) {
         actorRunId?: string | null;
         actorRunStopId?: string | null;
         actorUserId?: string | null;
+        boardHumanStop?: boolean;
         companyGuard?: string;
         expectedExecutionPolicy?: typeof issues.$inferInsert.executionPolicy;
       },
@@ -10885,6 +10886,7 @@ export function issueService(db: Db) {
         actorUserId,
         companyGuard,
         expectedExecutionPolicy,
+        boardHumanStop,
         ...issueData
       } = data;
       // An explicit edit claims the title, even if it keeps the same text.
@@ -10955,6 +10957,7 @@ export function issueService(db: Db) {
             fromStatus: existing.status,
             toStatus: issueData.status,
             action: "status",
+            humanStop: boardHumanStop === true && issueData.status === "cancelled",
           });
         }
       }

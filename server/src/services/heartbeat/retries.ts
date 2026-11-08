@@ -688,7 +688,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             | "issue_terminal_status"
             | "issue_not_in_progress"
             | "continuation_user_authorization_missing"
-            | "issue_execution_lock_changed";
+            | "issue_execution_lock_changed"
+            | "managed_repair_dispatch_denied";
           issueId: string | null;
           details: Record<string, unknown>;
         };
