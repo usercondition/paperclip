@@ -1335,6 +1335,121 @@ describe("managed repair native enforcement", () => {
     expect(ordinaryRepair).toBeUndefined();
   }, 60_000);
 
+  it("startup recovery leaves a held assigned repair unwoken and still wakes eligible work", async () => {
+    const isolated = await startEmbeddedPostgresTestDatabase("managed-repair-startup-");
+    const isolatedDb = createDb(isolated.connectionString);
+    try {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const userId = `board-${randomUUID()}`;
+      const now = new Date();
+      await isolatedDb.insert(companies).values({
+        id: companyId,
+        name: "Startup held repair",
+        issuePrefix: `S${companyId.replace(/-/g, "").slice(0, 8)}`,
+      });
+      await isolatedDb.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Inert synthetic worker",
+        role: "engineer",
+        adapterType: "paperclip_runner",
+        status: "idle",
+        runtimeConfig: { heartbeat: { enabled: false, maxConcurrentRuns: 1 } },
+      });
+      await isolatedDb.insert(authUsers).values({
+        id: userId,
+        name: "Board Operator",
+        email: `${userId}@example.test`,
+        emailVerified: true,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await isolatedDb.insert(companyMemberships).values({
+        companyId,
+        principalType: "user",
+        principalId: userId,
+        status: "active",
+        membershipRole: "owner",
+      });
+      const heldId = randomUUID();
+      const ordinaryId = randomUUID();
+      const eligibleId = randomUUID();
+      await isolatedDb.insert(issues).values([
+        { id: heldId, companyId, title: "Held assigned self approval", status: "todo", assigneeAgentId: agentId },
+        { id: ordinaryId, companyId, title: "Ordinary assigned", status: "todo", assigneeAgentId: agentId },
+        { id: eligibleId, companyId, title: "Eligible managed", status: "todo", assigneeAgentId: agentId },
+      ]);
+      const service = managedRepairControlService(isolatedDb);
+      const boardAttempt = attempt(userId);
+      await service.enroll(companyId, heldId, {
+        attempt: boardAttempt,
+        ownerUserId: userId,
+        nextStepId: "step-1",
+        nextStepText: "Must not self approve",
+      });
+      const priorRunId = randomUUID();
+      await isolatedDb.insert(heartbeatRuns).values({
+        id: priorRunId,
+        companyId,
+        agentId,
+        issueId: heldId,
+        status: "succeeded",
+        runtimeMode: "native",
+        resultJson: { test: "exact-fixture-result" },
+      });
+      await service.enroll(companyId, eligibleId, {
+        attempt: boardAttempt,
+        ownerAgentId: agentId,
+        nextStepId: "step-1",
+        nextStepText: "Authorized next step",
+      });
+      await service.grant(companyId, eligibleId, {
+        attempt: boardAttempt,
+        scope: ["execute_next_step"],
+        liftHold: true,
+      });
+
+      const heartbeat = heartbeatService(isolatedDb);
+      const first = await heartbeat.reconcileStrandedAssignedIssues();
+      await heartbeat.drainActiveRunExecutions();
+      expect(first.issueIds).toEqual(expect.arrayContaining([ordinaryId, eligibleId]));
+      expect(first.issueIds).not.toContain(heldId);
+      expect(first.assignmentDispatched).toBe(2);
+
+      const heldRuns = await isolatedDb.select().from(heartbeatRuns).where(eq(heartbeatRuns.issueId, heldId));
+      expect(heldRuns.map((run) => run.id)).toEqual([priorRunId]);
+      const [heldRepair] = await isolatedDb.select().from(issueManagedRepairs).where(eq(issueManagedRepairs.issueId, heldId));
+      expect(heldRepair?.liveHold).toBe(true);
+      expect(heldRepair?.authorizationSource).toBeNull();
+      const [heldIssue] = await isolatedDb.select().from(issues).where(eq(issues.id, heldId));
+      expect(heldIssue?.status).toBe("todo");
+
+      const ordinaryRuns = await isolatedDb.select().from(heartbeatRuns).where(eq(heartbeatRuns.issueId, ordinaryId));
+      expect(ordinaryRuns.some((run) => run.invocationSource === "assignment")).toBe(true);
+      const eligibleRuns = await isolatedDb.select().from(heartbeatRuns).where(eq(heartbeatRuns.issueId, eligibleId));
+      expect(eligibleRuns.some((run) => run.invocationSource === "assignment")).toBe(true);
+      const [eligibleRepair] = await isolatedDb.select().from(issueManagedRepairs).where(eq(issueManagedRepairs.issueId, eligibleId));
+      expect(eligibleRepair?.liveHold).toBe(false);
+
+      await expect(evaluateManagedRepairDispatch(isolatedDb, {
+        companyId,
+        issueId: heldId,
+        source: "automatic",
+        triggerId: "startup-still-denied",
+      })).rejects.toSatisfy((error: unknown) => httpCode(error) === "managed_repair_not_accountable");
+
+      const second = await heartbeat.reconcileStrandedAssignedIssues();
+      await heartbeat.drainActiveRunExecutions();
+      expect(second.issueIds).not.toContain(heldId);
+      const heldAfter = await isolatedDb.select().from(heartbeatRuns).where(eq(heartbeatRuns.issueId, heldId));
+      expect(heldAfter.map((run) => run.id)).toEqual([priorRunId]);
+    } finally {
+      await isolatedDb.$client.end();
+      await isolated.cleanup();
+    }
+  }, 120_000);
+
   it("fails closed when the managed repair table is absent", async () => {
     const fixture = await seedCompany("Missing migration");
     const ordinaryId = await seedIssue({ ...fixture, title: "Ordinary while present" });

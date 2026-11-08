@@ -1895,6 +1895,34 @@ export function recoveryService(
     return Boolean(comment || attachment);
   }
 
+  // A managed-repair denial is the gate working. Automatic recovery must not
+  // turn that denial into a successor run, and it must not fail the sweep:
+  // startup awaits this sweep, and a held assigned issue has to leave the
+  // server able to start. Any other error still propagates.
+  async function enqueueAutomaticRecoveryWake(
+    agentId: string,
+    issueId: string,
+    opts: RecoveryWakeupOptions,
+  ) {
+    try {
+      return await deps.enqueueWakeup(agentId, opts);
+    } catch (err) {
+      if (!isManagedRepairDispatchDenial(err)) throw err;
+      const details = err && typeof err === "object" && "details" in err
+        ? (err as { details?: { code?: unknown } }).details
+        : undefined;
+      logger.warn(
+        {
+          issueId,
+          agentId,
+          code: typeof details?.code === "string" ? details.code : "managed_repair_denied",
+        },
+        "stranded-issue recovery left a managed repair unwoken because dispatch is denied",
+      );
+      return null;
+    }
+  }
+
   async function enqueueStrandedIssueRecovery(input: {
     issueId: string;
     agentId: string;
@@ -1985,7 +2013,7 @@ export function recoveryService(
       )
         return null;
     }
-    const queued = await deps.enqueueWakeup(input.agentId, {
+    const queued = await enqueueAutomaticRecoveryWake(input.agentId, input.issueId, {
       source: "automation",
       triggerDetail: "system",
       reason: input.reason,
@@ -2043,7 +2071,7 @@ export function recoveryService(
     issue: typeof issues.$inferSelect,
     agentId: string,
   ) {
-    return deps.enqueueWakeup(agentId, {
+    return enqueueAutomaticRecoveryWake(agentId, issue.id, {
       source: "assignment",
       triggerDetail: "system",
       reason: "issue_assigned",
@@ -2219,7 +2247,7 @@ export function recoveryService(
         },
       });
 
-      const queued = await deps.enqueueWakeup(creatorAgent.id, {
+      const queued = await enqueueAutomaticRecoveryWake(creatorAgent.id, candidate.id, {
         source: "automation",
         triggerDetail: "system",
         reason: "issue_assigned",
@@ -4467,7 +4495,8 @@ export function recoveryService(
         }
         if (!(await instanceSettingsService(db).getExperimental()).enableAgentChat) { result.skipped += 1; continue; }
         {
-          await deliverConversationComments(db, issue, deps.enqueueWakeup);
+          await deliverConversationComments(db, issue, (agentId, opts) =>
+            enqueueAutomaticRecoveryWake(agentId, issue.id, opts));
         }
       }
       if (isWaitingConversation(issue)) { result.skipped += 1; continue; }
