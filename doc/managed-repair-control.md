@@ -78,7 +78,7 @@ Do this on a machine that is not the production Mac mini, or in a directory that
 
 1. Check out this branch. Confirm `git rev-parse HEAD` is this branch and `git merge-base --is-ancestor 82274853729f8c5b0f812da08595020f7eb64d66 HEAD` succeeds.
 2. Install and build from this checkout with Node `>=24.11.0`. Do not `npm install -g paperclipai`. This checkout used Node `v24.22.2`.
-3. Pack with the same steps the managed git install uses: `scripts/build-npm.sh --skip-checks --skip-typecheck`, then `pnpm -r --filter @paperclipai/server... build`, then pack every workspace package `resolveGitInstallWorkspacePackages` returns plus the CLI tarball, and `npm install` those tarballs together. Record the checksum of that payload archive.
+3. Pack with the same steps the managed git install uses: `scripts/build-npm.sh --skip-checks --skip-typecheck`, then `pnpm -r --filter @paperclipai/server... build`, then pack every workspace package `resolveGitInstallWorkspacePackages` returns plus the CLI tarball. Packages with `bundleDependencies` go through `scripts/prepare-bundled-package.mjs`, then `npm pack --ignore-scripts` on that prepared directory. `@paperclipai/plugin-sdk` stays version `1.0.0` in source, while the other packed packages are `0.3.1`. The publish manifest rewrites `workspace:*` to the parent package version, so the server tarball depends on `@paperclipai/plugin-sdk@0.3.1` and a direct `npm install` of the packed set fails with `ETARGET`. Relabel only the packed plugin-sdk manifest to `0.3.1` before that install. The release script does the same alignment by giving every public package one version. Then `npm install` the CLI tarball and those workspace tarballs together, outside this repo, and record the checksum.
 4. Keep the npm tarball `paperclipai-2026.1012.0.tgz` (integrity above) as the rollback artifact. Do not install this branch by replacing files inside `~/.paperclip/cli/installs/npm/2026.1012.0`.
 
 ## Backup, install, and rollback
@@ -118,7 +118,7 @@ pnpm --filter @paperclipai/shared exec tsc --ignoreConfig --noEmit --allowImport
 
 The suite file imports `./managed-repair-control.ts` so Node can run it without a build. `packages/shared/tsconfig.json` excludes `src/**/*.suite.ts` so the package typecheck keeps the normal `.js` import rule.
 
-Isolated Postgres, HTTP, and service tests, 6 passed, 0 failed:
+Isolated Postgres, HTTP, and service tests, 7 passed, 0 failed, on Node `v24.22.2`:
 
 ```sh
 pnpm install --frozen-lockfile
