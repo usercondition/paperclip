@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import express from "express";
 import request from "supertest";
-import { eq, sql } from "drizzle-orm";
+import { eq, or, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   agentApiKeys,
@@ -27,6 +27,7 @@ import { HttpError } from "../errors.js";
 import { managedRepairRoutes } from "../routes/managed-repair.js";
 import { hashBearerToken } from "../services/board-auth.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { createWakeQueue } from "../modules/wake-queue/index.js";
 import { createHeartbeatLifecycle } from "../services/heartbeat/run-lifecycle.js";
 import { issueService } from "../services/issues.js";
 import {
@@ -141,10 +142,10 @@ describe("managed repair native enforcement", () => {
     const currentLast = current.entries[current.entries.length - 1]!;
     expect(provenLast).toMatchObject({ idx: 334, tag: "0334_rare_slipstream", when: 1791807836288 });
     expect(currentPrevious).toEqual(provenLast);
-    expect(currentLast).toMatchObject({ idx: 335, tag: "0335_managed_repair_control" });
+    expect(currentLast).toMatchObject({ idx: 335, tag: "0335_unusual_wolf_cub" });
     expect(currentLast.when).toBeGreaterThan(provenLast.when);
     const sqlText = readFileSync(new URL(
-      "../../../packages/db/src/migrations/0335_managed_repair_control.sql",
+      `../../../packages/db/src/migrations/${currentLast.tag}.sql`,
       import.meta.url,
     ), "utf8");
     expect(sqlText).toContain("CREATE TABLE");
@@ -517,8 +518,184 @@ describe("managed repair native enforcement", () => {
     expect(requests.some((row) => row.error === "managed_repair_wake_replay" && row.status === "coalesced")).toBe(true);
     expect(requests.find((row) => row.idempotencyKey === `managed-b-${managedId}`)?.status).toBe("deferred_issue_execution");
     expect(requests.find((row) => row.idempotencyKey === `running-next-${runningIssueId}`)?.status).toBe("deferred_issue_execution");
-    expect(JSON.stringify(requests.find((row) => row.idempotencyKey === `running-next-${runningIssueId}`)?.payload)).toContain(followupComment);
+    const deferredPayload = requests.find((row) => row.idempotencyKey === `running-next-${runningIssueId}`)?.payload as Record<string, unknown> | null;
+    const deferredContext = deferredPayload?._paperclipWakeContext as Record<string, unknown> | undefined;
+    expect(deferredContext?.issueId).toBe(runningIssueId);
+    expect(deferredContext?.wakeCommentId).toBe(followupComment);
+    expect(JSON.stringify(deferredPayload)).toContain(followupComment);
     expect(await db.select().from(managedRepairWakeClaims).where(eq(managedRepairWakeClaims.issueId, managedId))).toHaveLength(1);
     expect(await db.select().from(managedRepairWakeClaims).where(eq(managedRepairWakeClaims.issueId, runningIssueId))).toHaveLength(1);
+  }, 60_000);
+
+  it("promotes a deferred trigger once after the current run ends, and withholds it when hold, halt, or authority fails", async () => {
+    const fixture = await seedCompany("Deferred promotion");
+    const service = managedRepairControlService(db);
+    const queue = createWakeQueue(db, {
+      resolveResponsibleUserId: async () => fixture.userId,
+      getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+      resolveSessionBeforeForWakeup: async () => null,
+      wakeAdmissionHelpers: {
+        filterZombieCoalesceTarget: (target) => target,
+        mergeCoalescedContextSnapshot: (existing) => (
+          existing && typeof existing === "object" ? existing as Record<string, unknown> : {}
+        ),
+        shouldDeferFollowupWakeForSameIssue: () => false,
+        shouldQueueFollowupForRunningIssueWake: () => false,
+      },
+      recovery: {
+        escalateStrandedAssignedIssue: async () => {},
+        escalateStrandedRecoveryIssueInPlace: async () => {},
+      },
+    });
+    const heartbeat = heartbeatService(db);
+    await db.insert(heartbeatRuns).values({
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      status: "running",
+    });
+
+    async function runsFor(issueId: string) {
+      return db.select().from(heartbeatRuns).where(or(
+        eq(heartbeatRuns.issueId, issueId),
+        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+      ));
+    }
+
+    async function deferBehindRunningIssue(title: string) {
+      const issueId = await seedIssue({ ...fixture, title });
+      const firstComment = randomUUID();
+      const nextComment = randomUUID();
+      await db.insert(issueComments).values([
+        { id: firstComment, companyId: fixture.companyId, issueId, authorType: "user", authorUserId: fixture.userId, body: "Current task" },
+        { id: nextComment, companyId: fixture.companyId, issueId, authorType: "user", authorUserId: fixture.userId, body: "Later task" },
+      ]);
+      await service.enroll(fixture.companyId, issueId, {
+        attempt: attempt(fixture.userId),
+        ownerUserId: fixture.userId,
+        nextStepId: "step-1",
+        nextStepText: `Finish ${title}`,
+      });
+      await service.grant(fixture.companyId, issueId, {
+        attempt: attempt(fixture.userId),
+        scope: ["execute_next_step"],
+        liftHold: true,
+      });
+      const current = await heartbeat.wakeup(fixture.agentId, {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "issue_commented",
+        requestedByActorType: "user",
+        requestedByActorId: fixture.userId,
+        idempotencyKey: `current-${issueId}`,
+        payload: { issueId, commentId: firstComment },
+        contextSnapshot: { issueId, wakeCommentId: firstComment },
+      });
+      expect(current?.id).toBeTruthy();
+      await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, current!.id));
+      await db.update(issues).set({ executionRunId: current!.id }).where(eq(issues.id, issueId));
+      const followup = await heartbeat.wakeup(fixture.agentId, {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "issue_commented",
+        requestedByActorType: "user",
+        requestedByActorId: fixture.userId,
+        idempotencyKey: `later-${issueId}`,
+        payload: { issueId, commentId: nextComment },
+        contextSnapshot: { issueId, wakeCommentId: nextComment },
+      });
+      expect(followup).toBeNull();
+      await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, current!.id));
+      return { issueId, runId: current!.id, nextComment };
+    }
+
+    async function release(runId: string) {
+      return queue.releaseIssueExecution({
+        companyId: fixture.companyId,
+        runId,
+        now: new Date(),
+        suppressImmediateRecovery: true,
+      });
+    }
+
+    const allowed = await deferBehindRunningIssue("Allowed follow-up");
+    const [firstRelease, secondRelease] = await Promise.all([release(allowed.runId), release(allowed.runId)]);
+    expect([firstRelease.outcome.kind, secondRelease.outcome.kind].sort()).toEqual(["promoted", "released"]);
+    await release(allowed.runId);
+    const allowedRuns = await runsFor(allowed.issueId);
+    const promoted = allowedRuns.filter((run) => run.id !== allowed.runId);
+    expect(promoted).toHaveLength(1);
+    expect(promoted[0]?.status).toBe("queued");
+    expect(promoted[0]?.contextSnapshot).toMatchObject({
+      issueId: allowed.issueId,
+      wakeCommentId: allowed.nextComment,
+    });
+    expect(JSON.stringify(allowedRuns.find((run) => run.id === allowed.runId)?.contextSnapshot)).not.toContain(allowed.nextComment);
+    expect(promoted[0]?.contextSnapshot).toHaveProperty("managedRepairClaimId");
+    const allowedClaims = await db.select().from(managedRepairWakeClaims).where(eq(managedRepairWakeClaims.issueId, allowed.issueId));
+    expect(allowedClaims).toHaveLength(2);
+    const allowedWake = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, `later-${allowed.issueId}`));
+    expect(allowedWake[0]?.status).toBe("queued");
+    expect(allowedWake[0]?.runId).toBe(promoted[0]?.id);
+
+    for (const blocker of ["hold", "halt", "authority"] as const) {
+      const blocked = await deferBehindRunningIssue(blocker);
+      if (blocker === "hold") {
+        await service.setHold(fixture.companyId, blocked.issueId, { hold: true, attempt: attempt(fixture.userId) });
+      } else if (blocker === "halt") {
+        await db.update(issueManagedRepairs).set({ dispatchHalted: true }).where(eq(issueManagedRepairs.issueId, blocked.issueId));
+      } else {
+        await db.update(issueManagedRepairs).set({
+          authorizationVersion: 0,
+          authorizationSource: null,
+          authorizationGrantedByUserId: null,
+          authorizedScope: [],
+        }).where(eq(issueManagedRepairs.issueId, blocked.issueId));
+      }
+      const blockedRelease = await release(blocked.runId);
+      expect(blockedRelease.outcome.kind).toBe("released");
+      const blockedRuns = await runsFor(blocked.issueId);
+      expect(blockedRuns.map((run) => run.id)).toEqual([blocked.runId]);
+      const blockedWake = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, `later-${blocked.issueId}`));
+      expect(blockedWake[0]?.status).toBe("cancelled");
+      expect(blockedWake[0]?.error).toBe("managed_repair_dispatch_denied");
+      expect(blockedWake[0]?.runId).toBeNull();
+      await release(blocked.runId);
+      expect((await runsFor(blocked.issueId))).toHaveLength(1);
+    }
+
+    const ordinaryId = await seedIssue({ ...fixture, title: "Ordinary deferred" });
+    const ordinaryRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: ordinaryRunId,
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      issueId: ordinaryId,
+      status: "succeeded",
+      contextSnapshot: { issueId: ordinaryId },
+      responsibleUserId: fixture.userId,
+    });
+    await db.update(issues).set({ executionRunId: ordinaryRunId }).where(eq(issues.id, ordinaryId));
+    await db.insert(agentWakeupRequests).values({
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "assignment",
+      status: "deferred_issue_execution",
+      requestedByActorType: "user",
+      requestedByActorId: fixture.userId,
+      idempotencyKey: `ordinary-later-${ordinaryId}`,
+      payload: {
+        issueId: ordinaryId,
+        _paperclipWakeContext: { issueId: ordinaryId, wakeReason: "assignment" },
+      },
+    });
+    const ordinaryRelease = await release(ordinaryRunId);
+    expect(ordinaryRelease.outcome.kind).toBe("promoted");
+    const ordinaryRuns = await runsFor(ordinaryId);
+    expect(ordinaryRuns.filter((run) => run.status === "queued")).toHaveLength(1);
+    expect(await db.select().from(issueManagedRepairs).where(eq(issueManagedRepairs.issueId, ordinaryId))).toHaveLength(0);
+    await release(ordinaryRunId);
+    expect((await runsFor(ordinaryId)).filter((run) => run.status === "queued")).toHaveLength(1);
   }, 60_000);
 });

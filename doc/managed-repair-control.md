@@ -62,7 +62,7 @@ The gate does not stop shell commands, browser actions, or other side effects ou
 
 ## Schema
 
-Migration `0335_managed_repair_control` adds three tables:
+Migration `0335_unusual_wolf_cub` adds three tables:
 
 - `issue_managed_repairs`
 - `managed_repair_verdicts`
@@ -77,11 +77,9 @@ Rollback of the application can leave the tables in place. Do not drop them as t
 Do this on a machine that is not the production Mac mini, or in a directory that is not `~/.paperclip`.
 
 1. Check out this branch. Confirm `git rev-parse HEAD` is this branch and `git merge-base --is-ancestor 82274853729f8c5b0f812da08595020f7eb64d66 HEAD` succeeds.
-2. Install and build from this checkout. Do not `npm install -g paperclipai`. The repo engines field asks for Node `>=24.11.0`. This checkout installed with Node `v22.23.4` because `.npmrc` does not set `engine-strict`. Use Node 24 for the package you install.
-3. Pack the built CLI with the package manager this repo uses (`pnpm pack` in `cli/` after the repo build). Record the tarball checksum.
-4. Keep the npm tarball `paperclipai-2026.1012.0.tgz` (integrity above) as the rollback artifact.
-
-`pnpm install --frozen-lockfile` completed on this checkout. `pnpm --filter @paperclipai/shared typecheck` and `pnpm --filter @paperclipai/db typecheck` passed. The database check includes migration numbering and migration safety. `pnpm --filter @paperclipai/server typecheck` compiled the runner, then `tsc` reported the errors fixed in this revision. `pnpm --dir server exec tsc --noEmit --pretty false` then passed. A full `pnpm build` and `pnpm pack` were not run.
+2. Install and build from this checkout with Node `>=24.11.0`. Do not `npm install -g paperclipai`. This checkout used Node `v24.22.2`.
+3. Pack with the same steps the managed git install uses: `scripts/build-npm.sh --skip-checks --skip-typecheck`, then `pnpm -r --filter @paperclipai/server... build`, then pack every workspace package `resolveGitInstallWorkspacePackages` returns plus the CLI tarball, and `npm install` those tarballs together. Record the checksum of that payload archive.
+4. Keep the npm tarball `paperclipai-2026.1012.0.tgz` (integrity above) as the rollback artifact. Do not install this branch by replacing files inside `~/.paperclip/cli/installs/npm/2026.1012.0`.
 
 ## Backup, install, and rollback
 
@@ -128,6 +126,10 @@ node scripts/ensure-plugin-build-deps.mjs
 pnpm --dir server exec vitest run --config vitest.config.ts src/services/managed-repair-control.integration.test.ts
 ```
 
-That file applies migration `0335` on a scratch database, checks that it follows journal entry `0334_rare_slipstream` from commit `82274853729f8c5b0f812da08595020f7eb64d66`, and checks that `ALTER TABLE` touches only the three new tables. It uses `deploymentMode: "authenticated"`. A missing bearer is 401. An agent key cannot enroll. A body with `authorType` or comment text is 400. A board key can enroll. `read` and `offline` scope can dispatch while `liveHold` stays true, and that dispatch creates no heartbeat run. Checkout and `in_progress` stay denied. A user comment does not change `authorizationVersion`. Board `cancelled` does not need saved-result evidence and does not clear the hold. `done` still needs independent QA. A succeeded run does not halt. A later `failed` run halts once. A repeated failure note does not increment again. An enqueue denial does not halt. Two concurrent claim transactions leave one row and one 409 replay. A second comment on a queued or running managed-repair run does not create a second run and does not change the in-flight context. The same comment joins. A different comment is `deferred_issue_execution`. An ordinary issue still coalesces into one run.
+That file applies migration `0335_unusual_wolf_cub` on a scratch database, checks that it follows journal entry `0334_rare_slipstream` from commit `82274853729f8c5b0f812da08595020f7eb64d66`, and checks that `ALTER TABLE` touches only the three new tables. `pnpm db:generate` produced that migration and its snapshot from the `0334` snapshot plus the current schema. A second `pnpm db:generate` reported no schema changes. The package prune keeps five snapshots, so `0330_snapshot.json` is removed and `0330_spooky_white_tiger.sql` stays. It uses `deploymentMode: "authenticated"`. A missing bearer is 401. An agent key cannot enroll. A body with `authorType` or comment text is 400. A board key can enroll. `read` and `offline` scope can dispatch while `liveHold` stays true, and that dispatch creates no heartbeat run. Checkout and `in_progress` stay denied. A user comment does not change `authorizationVersion`. Board `cancelled` does not need saved-result evidence and does not clear the hold. `done` still needs independent QA. A succeeded run does not halt. A later `failed` run halts once. A repeated failure note does not increment again. An enqueue denial does not halt. Two concurrent claim transactions leave one row and one 409 replay. A second comment on a queued or running managed-repair run does not create a second run and does not change the in-flight context. The same comment joins. A different comment is stored as `deferred_issue_execution` with its own `_paperclipWakeContext`. An ordinary issue still coalesces into one run.
 
-Not run: `pnpm verify`, `pnpm -r typecheck`, `pnpm build`, `pnpm pack`, and any check of the installed npm payload or the production database. No production access, restart, deploy, or merge was performed. Independent review and a real install check come after this pull request.
+After the current run is marked `succeeded`, two concurrent releases of that run promote the deferred trigger once. The promoted run carries that trigger's issue and comment, plus one new wake claim. A repeated release does not create another run. Re-applying the live hold, setting `dispatchHalted`, or clearing the board grant cancels that deferred wake with `managed_repair_dispatch_denied` and creates no run. An ordinary deferred wake still promotes, and it does not create a repair row.
+
+`pnpm typecheck` and `pnpm build` passed on Node `v24.22.2`. The first typecheck failed because the CLI project includes `packages/shared/src` and compiled the policy suite's `.ts` import. The CLI tsconfig now excludes `*.suite.ts`. The rerun passed. `cargo check` still prints seven preexisting unused-import warnings in `paperclip-runner-core`; they are not from this change and the check exits 0.
+
+No production access, restart, deploy, or merge was performed. Independent review is still required. The fork pull request workflow calls `paperclipai/paperclip/.github/workflows/pr-trusted.yml@master`; this fork had no Actions runs to read.

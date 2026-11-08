@@ -24,7 +24,7 @@ CREATE TABLE "issue_managed_repairs" (
 	"last_dispatch_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "issue_managed_repairs_stage_check" CHECK ("stage" in ('staged', 'reviewed', 'applied', 'independently_verified', 'closed'))
+	CONSTRAINT "issue_managed_repairs_stage_check" CHECK ("issue_managed_repairs"."stage" in ('staged', 'reviewed', 'applied', 'independently_verified', 'closed'))
 );
 --> statement-breakpoint
 CREATE TABLE "managed_repair_verdicts" (
@@ -38,9 +38,9 @@ CREATE TABLE "managed_repair_verdicts" (
 	"kind" text NOT NULL,
 	"source" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "managed_repair_verdicts_outcome_check" CHECK ("outcome" in ('PASS', 'FAIL')),
-	CONSTRAINT "managed_repair_verdicts_kind_check" CHECK ("kind" in ('qa', 'note')),
-	CONSTRAINT "managed_repair_verdicts_source_check" CHECK ("source" in ('independent_review', 'monitor'))
+	CONSTRAINT "managed_repair_verdicts_outcome_check" CHECK ("managed_repair_verdicts"."outcome" in ('PASS', 'FAIL')),
+	CONSTRAINT "managed_repair_verdicts_kind_check" CHECK ("managed_repair_verdicts"."kind" in ('qa', 'note')),
+	CONSTRAINT "managed_repair_verdicts_source_check" CHECK ("managed_repair_verdicts"."source" in ('independent_review', 'monitor'))
 );
 --> statement-breakpoint
 CREATE TABLE "managed_repair_wake_claims" (
@@ -54,8 +54,8 @@ CREATE TABLE "managed_repair_wake_claims" (
 	"failure_count" integer DEFAULT 0 NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "managed_repair_wake_claims_status_check" CHECK ("status" in ('claimed', 'dispatched', 'failed', 'halted')),
-	CONSTRAINT "managed_repair_wake_claims_source_check" CHECK ("source" in ('direct', 'comment', 'idle_next_step', 'automatic'))
+	CONSTRAINT "managed_repair_wake_claims_status_check" CHECK ("managed_repair_wake_claims"."status" in ('claimed', 'dispatched', 'failed', 'halted')),
+	CONSTRAINT "managed_repair_wake_claims_source_check" CHECK ("managed_repair_wake_claims"."source" in ('direct', 'comment', 'idle_next_step', 'automatic'))
 );
 --> statement-breakpoint
 ALTER TABLE "issue_managed_repairs" ADD CONSTRAINT "issue_managed_repairs_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint

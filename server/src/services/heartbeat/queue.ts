@@ -223,6 +223,18 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
 
 export const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 
+function deferredManagedRepairPayload(
+  payload: Record<string, unknown> | null | undefined,
+  issueId: string | null,
+  contextSnapshot: Record<string, unknown>,
+) {
+  return {
+    ...(payload ?? {}),
+    ...(issueId ? { issueId } : {}),
+    [DEFERRED_WAKE_CONTEXT_KEY]: contextSnapshot,
+  };
+}
+
 export const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = [
   "queued",
   "running",
@@ -3705,7 +3717,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 source,
                 triggerDetail,
                 reason,
-                payload,
+                payload: deferredManagedRepairPayload(payload, issueId, enrichedContextSnapshot),
                 status: "deferred_issue_execution",
                 requestedByActorType: opts.requestedByActorType ?? null,
                 requestedByActorId: opts.requestedByActorId ?? null,
@@ -4334,7 +4346,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           source,
           triggerDetail,
           reason,
-          payload,
+          payload: deferredManagedRepairPayload(payload, issueId, enrichedContextSnapshot),
           status: "deferred_issue_execution",
           requestedByActorType: opts.requestedByActorType ?? null,
           requestedByActorId: opts.requestedByActorId ?? null,

@@ -1,5 +1,5 @@
 {
-  "id": "40513a3d-c9c0-40c0-8dbd-07d14f864a51",
+  "id": "c435725f-8eac-486a-bb09-df28b8774f24",
   "prevId": "39d82f2c-8fd5-4606-84df-f51880dbd6a7",
   "version": "7",
   "dialect": "postgresql",
@@ -34147,6 +34147,290 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.issue_managed_repairs": {
+      "name": "issue_managed_repairs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issue_id": {
+          "name": "issue_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "enrolled": {
+          "name": "enrolled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "owner_agent_id": {
+          "name": "owner_agent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "next_step_id": {
+          "name": "next_step_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "next_step_text": {
+          "name": "next_step_text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "next_step_updated_at": {
+          "name": "next_step_updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stage": {
+          "name": "stage",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'staged'"
+        },
+        "live_hold": {
+          "name": "live_hold",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "authorization_version": {
+          "name": "authorization_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "authorized_scope": {
+          "name": "authorized_scope",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "authorization_source": {
+          "name": "authorization_source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "authorization_granted_by_user_id": {
+          "name": "authorization_granted_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "saved_result_version": {
+          "name": "saved_result_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "saved_result_evidence_ref": {
+          "name": "saved_result_evidence_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "evidenced_blocker": {
+          "name": "evidenced_blocker",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "idle_threshold_ms": {
+          "name": "idle_threshold_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1200000
+        },
+        "max_dispatch_failures": {
+          "name": "max_dispatch_failures",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "dispatch_failure_count": {
+          "name": "dispatch_failure_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "dispatch_halted": {
+          "name": "dispatch_halted",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "last_dispatch_at": {
+          "name": "last_dispatch_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "issue_managed_repairs_issue_uq": {
+          "name": "issue_managed_repairs_issue_uq",
+          "columns": [
+            {
+              "expression": "issue_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "issue_managed_repairs_company_issue_uq": {
+          "name": "issue_managed_repairs_company_issue_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "issue_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "issue_managed_repairs_idle_scan_idx": {
+          "name": "issue_managed_repairs_idle_scan_idx",
+          "columns": [
+            {
+              "expression": "enrolled",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "live_hold",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "dispatch_halted",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "issue_managed_repairs_company_id_companies_id_fk": {
+          "name": "issue_managed_repairs_company_id_companies_id_fk",
+          "tableFrom": "issue_managed_repairs",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "issue_managed_repairs_issue_id_issues_id_fk": {
+          "name": "issue_managed_repairs_issue_id_issues_id_fk",
+          "tableFrom": "issue_managed_repairs",
+          "tableTo": "issues",
+          "columnsFrom": [
+            "issue_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "issue_managed_repairs_owner_agent_id_agents_id_fk": {
+          "name": "issue_managed_repairs_owner_agent_id_agents_id_fk",
+          "tableFrom": "issue_managed_repairs",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "owner_agent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "issue_managed_repairs_stage_check": {
+          "name": "issue_managed_repairs_stage_check",
+          "value": "\"issue_managed_repairs\".\"stage\" in ('staged', 'reviewed', 'applied', 'independently_verified', 'closed')"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.issue_plan_decompositions": {
       "name": "issue_plan_decompositions",
       "schema": "",
@@ -39298,6 +39582,311 @@
         "managed_agent_profiles_qualified_revision_check": {
           "name": "managed_agent_profiles_qualified_revision_check",
           "value": "(\"managed_agent_profiles\".\"qualified_at\" IS NULL AND \"managed_agent_profiles\".\"qualified_revision\" IS NULL) OR (\"managed_agent_profiles\".\"qualified_at\" IS NOT NULL AND \"managed_agent_profiles\".\"qualification\" <> '{}'::jsonb AND \"managed_agent_profiles\".\"qualified_revision\" ~ '^sha256:[0-9a-f]{64}$')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.managed_repair_verdicts": {
+      "name": "managed_repair_verdicts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "repair_id": {
+          "name": "repair_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reviewer_user_id": {
+          "name": "reviewer_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reviewer_agent_id": {
+          "name": "reviewer_agent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "artifact_version": {
+          "name": "artifact_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "managed_repair_verdicts_repair_idx": {
+          "name": "managed_repair_verdicts_repair_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "repair_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "managed_repair_verdicts_company_id_companies_id_fk": {
+          "name": "managed_repair_verdicts_company_id_companies_id_fk",
+          "tableFrom": "managed_repair_verdicts",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "managed_repair_verdicts_repair_id_issue_managed_repairs_id_fk": {
+          "name": "managed_repair_verdicts_repair_id_issue_managed_repairs_id_fk",
+          "tableFrom": "managed_repair_verdicts",
+          "tableTo": "issue_managed_repairs",
+          "columnsFrom": [
+            "repair_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "managed_repair_verdicts_reviewer_agent_id_agents_id_fk": {
+          "name": "managed_repair_verdicts_reviewer_agent_id_agents_id_fk",
+          "tableFrom": "managed_repair_verdicts",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "reviewer_agent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "managed_repair_verdicts_outcome_check": {
+          "name": "managed_repair_verdicts_outcome_check",
+          "value": "\"managed_repair_verdicts\".\"outcome\" in ('PASS', 'FAIL')"
+        },
+        "managed_repair_verdicts_kind_check": {
+          "name": "managed_repair_verdicts_kind_check",
+          "value": "\"managed_repair_verdicts\".\"kind\" in ('qa', 'note')"
+        },
+        "managed_repair_verdicts_source_check": {
+          "name": "managed_repair_verdicts_source_check",
+          "value": "\"managed_repair_verdicts\".\"source\" in ('independent_review', 'monitor')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.managed_repair_wake_claims": {
+      "name": "managed_repair_wake_claims",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issue_id": {
+          "name": "issue_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "repair_id": {
+          "name": "repair_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "intent_key": {
+          "name": "intent_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'dispatched'"
+        },
+        "failure_count": {
+          "name": "failure_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "managed_repair_wake_claims_issue_intent_uq": {
+          "name": "managed_repair_wake_claims_issue_intent_uq",
+          "columns": [
+            {
+              "expression": "issue_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "intent_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "managed_repair_wake_claims_company_id_companies_id_fk": {
+          "name": "managed_repair_wake_claims_company_id_companies_id_fk",
+          "tableFrom": "managed_repair_wake_claims",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "managed_repair_wake_claims_issue_id_issues_id_fk": {
+          "name": "managed_repair_wake_claims_issue_id_issues_id_fk",
+          "tableFrom": "managed_repair_wake_claims",
+          "tableTo": "issues",
+          "columnsFrom": [
+            "issue_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "managed_repair_wake_claims_repair_id_issue_managed_repairs_id_fk": {
+          "name": "managed_repair_wake_claims_repair_id_issue_managed_repairs_id_fk",
+          "tableFrom": "managed_repair_wake_claims",
+          "tableTo": "issue_managed_repairs",
+          "columnsFrom": [
+            "repair_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "managed_repair_wake_claims_status_check": {
+          "name": "managed_repair_wake_claims_status_check",
+          "value": "\"managed_repair_wake_claims\".\"status\" in ('claimed', 'dispatched', 'failed', 'halted')"
+        },
+        "managed_repair_wake_claims_source_check": {
+          "name": "managed_repair_wake_claims_source_check",
+          "value": "\"managed_repair_wake_claims\".\"source\" in ('direct', 'comment', 'idle_next_step', 'automatic')"
         }
       },
       "isRLSEnabled": false
@@ -58854,595 +59443,6 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.issue_managed_repairs": {
-      "name": "issue_managed_repairs",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "issue_id": {
-          "name": "issue_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "enrolled": {
-          "name": "enrolled",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
-        "owner_user_id": {
-          "name": "owner_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "owner_agent_id": {
-          "name": "owner_agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "next_step_id": {
-          "name": "next_step_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "next_step_text": {
-          "name": "next_step_text",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "next_step_updated_at": {
-          "name": "next_step_updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "stage": {
-          "name": "stage",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'staged'"
-        },
-        "live_hold": {
-          "name": "live_hold",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
-        "authorization_version": {
-          "name": "authorization_version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "authorized_scope": {
-          "name": "authorized_scope",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "authorization_source": {
-          "name": "authorization_source",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "authorization_granted_by_user_id": {
-          "name": "authorization_granted_by_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "saved_result_version": {
-          "name": "saved_result_version",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "saved_result_evidence_ref": {
-          "name": "saved_result_evidence_ref",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "evidenced_blocker": {
-          "name": "evidenced_blocker",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "idle_threshold_ms": {
-          "name": "idle_threshold_ms",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1200000
-        },
-        "max_dispatch_failures": {
-          "name": "max_dispatch_failures",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
-        },
-        "dispatch_failure_count": {
-          "name": "dispatch_failure_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "dispatch_halted": {
-          "name": "dispatch_halted",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "last_dispatch_at": {
-          "name": "last_dispatch_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "issue_managed_repairs_issue_uq": {
-          "name": "issue_managed_repairs_issue_uq",
-          "columns": [
-            {
-              "expression": "issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "issue_managed_repairs_company_issue_uq": {
-          "name": "issue_managed_repairs_company_issue_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "issue_managed_repairs_idle_scan_idx": {
-          "name": "issue_managed_repairs_idle_scan_idx",
-          "columns": [
-            {
-              "expression": "enrolled",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "live_hold",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "dispatch_halted",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "issue_managed_repairs_company_id_companies_id_fk": {
-          "name": "issue_managed_repairs_company_id_companies_id_fk",
-          "tableFrom": "issue_managed_repairs",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "issue_managed_repairs_issue_id_issues_id_fk": {
-          "name": "issue_managed_repairs_issue_id_issues_id_fk",
-          "tableFrom": "issue_managed_repairs",
-          "tableTo": "issues",
-          "columnsFrom": [
-            "issue_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "issue_managed_repairs_owner_agent_id_agents_id_fk": {
-          "name": "issue_managed_repairs_owner_agent_id_agents_id_fk",
-          "tableFrom": "issue_managed_repairs",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "owner_agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "issue_managed_repairs_stage_check": {
-          "name": "issue_managed_repairs_stage_check",
-          "value": "\"issue_managed_repairs\".\"stage\" in ('staged', 'reviewed', 'applied', 'independently_verified', 'closed')"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.managed_repair_verdicts": {
-      "name": "managed_repair_verdicts",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "repair_id": {
-          "name": "repair_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "reviewer_user_id": {
-          "name": "reviewer_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "reviewer_agent_id": {
-          "name": "reviewer_agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "outcome": {
-          "name": "outcome",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "artifact_version": {
-          "name": "artifact_version",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source": {
-          "name": "source",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "managed_repair_verdicts_repair_idx": {
-          "name": "managed_repair_verdicts_repair_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "repair_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "managed_repair_verdicts_company_id_companies_id_fk": {
-          "name": "managed_repair_verdicts_company_id_companies_id_fk",
-          "tableFrom": "managed_repair_verdicts",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "managed_repair_verdicts_repair_id_issue_managed_repairs_id_fk": {
-          "name": "managed_repair_verdicts_repair_id_issue_managed_repairs_id_fk",
-          "tableFrom": "managed_repair_verdicts",
-          "tableTo": "issue_managed_repairs",
-          "columnsFrom": [
-            "repair_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "managed_repair_verdicts_reviewer_agent_id_agents_id_fk": {
-          "name": "managed_repair_verdicts_reviewer_agent_id_agents_id_fk",
-          "tableFrom": "managed_repair_verdicts",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "reviewer_agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "managed_repair_verdicts_outcome_check": {
-          "name": "managed_repair_verdicts_outcome_check",
-          "value": "\"managed_repair_verdicts\".\"outcome\" in ('PASS', 'FAIL')"
-        },
-        "managed_repair_verdicts_kind_check": {
-          "name": "managed_repair_verdicts_kind_check",
-          "value": "\"managed_repair_verdicts\".\"kind\" in ('qa', 'note')"
-        },
-        "managed_repair_verdicts_source_check": {
-          "name": "managed_repair_verdicts_source_check",
-          "value": "\"managed_repair_verdicts\".\"source\" in ('independent_review', 'monitor')"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.managed_repair_wake_claims": {
-      "name": "managed_repair_wake_claims",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "issue_id": {
-          "name": "issue_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "repair_id": {
-          "name": "repair_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "intent_key": {
-          "name": "intent_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source": {
-          "name": "source",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'dispatched'"
-        },
-        "failure_count": {
-          "name": "failure_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "managed_repair_wake_claims_issue_intent_uq": {
-          "name": "managed_repair_wake_claims_issue_intent_uq",
-          "columns": [
-            {
-              "expression": "issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "intent_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "managed_repair_wake_claims_company_id_companies_id_fk": {
-          "name": "managed_repair_wake_claims_company_id_companies_id_fk",
-          "tableFrom": "managed_repair_wake_claims",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "managed_repair_wake_claims_issue_id_issues_id_fk": {
-          "name": "managed_repair_wake_claims_issue_id_issues_id_fk",
-          "tableFrom": "managed_repair_wake_claims",
-          "tableTo": "issues",
-          "columnsFrom": [
-            "issue_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "managed_repair_wake_claims_repair_id_issue_managed_repairs_id_fk": {
-          "name": "managed_repair_wake_claims_repair_id_issue_managed_repairs_id_fk",
-          "tableFrom": "managed_repair_wake_claims",
-          "tableTo": "issue_managed_repairs",
-          "columnsFrom": [
-            "repair_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "managed_repair_wake_claims_status_check": {
-          "name": "managed_repair_wake_claims_status_check",
-          "value": "\"managed_repair_wake_claims\".\"status\" in ('claimed', 'dispatched', 'failed', 'halted')"
-        },
-        "managed_repair_wake_claims_source_check": {
-          "name": "managed_repair_wake_claims_source_check",
-          "value": "\"managed_repair_wake_claims\".\"source\" in ('direct', 'comment', 'idle_next_step', 'automatic')"
-        }
-      },
       "isRLSEnabled": false
     }
   },
