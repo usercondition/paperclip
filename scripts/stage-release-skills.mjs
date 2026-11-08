@@ -10,8 +10,17 @@ if (!existsSync(skillsRoot)) {
   throw new Error(`Release skills directory is missing at ${skillsRoot}.`);
 }
 
+// Match scripts/release.sh: only these packages receive the repo skills tree.
+// Adapters that already ship their own skills, including hermes, stay untouched.
+const releaseSkillPackages = new Set([
+  "server",
+  "packages/adapters/claude-local",
+  "packages/adapters/codex-local",
+]);
+
 const staged = [];
 for (const entry of manifest) {
+  if (!releaseSkillPackages.has(entry.dir)) continue;
   const packageJsonPath = join(repoRoot, entry.dir, "package.json");
   if (!existsSync(packageJsonPath)) continue;
   const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));

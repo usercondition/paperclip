@@ -120,6 +120,20 @@ try {
   if (server.manifest.dependencies?.["@paperclipai/plugin-sdk"] !== identity.version) {
     throw new Error(`Server depends on plugin-sdk@${server.manifest.dependencies?.["@paperclipai/plugin-sdk"] ?? "missing"}.`);
   }
+  const hermes = manifests.find((entry) => entry.manifest.name === "@paperclipai/hermes-paperclip-adapter");
+  if (hermes) {
+    const listing = execFileSync("tar", ["-tzf", join(outputDir, hermes.name)], { encoding: "utf8" });
+    if (!listing.includes("package/skills/paperclip-task-bridge/SKILL.md")) {
+      throw new Error("Hermes package is missing its own paperclip-task-bridge skill.");
+    }
+    if (listing.includes("package/skills/suggestion-box/SKILL.md")) {
+      throw new Error("Hermes package was overwritten with the repo skills tree.");
+    }
+  }
+  const serverListing = execFileSync("tar", ["-tzf", join(outputDir, server.name)], { encoding: "utf8" });
+  if (!serverListing.includes("package/skills/paperclip/SKILL.md")) {
+    throw new Error("Server package is missing the staged repo skills tree.");
+  }
   const sums = manifests.map((entry) => {
     const bytes = readFileSync(join(outputDir, entry.name));
     return `${createHash("sha256").update(bytes).digest("hex")}  ${entry.name}`;
