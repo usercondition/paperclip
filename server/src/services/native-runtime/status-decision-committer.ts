@@ -803,6 +803,10 @@ async function materializeDecisionEffect(input: {
         tx: input.tx as unknown as Db, companyId: input.companyId,
         issueId: input.issue.id, runId: input.runId, agentId: effect.agentId,
       });
+      if (!retryId) {
+        return { effectKind: effect.kind, targetType: "heartbeat_run", targetId: input.runId,
+          payload: { cause: effect.cause, summary: effect.summary, managedRepair: "dispatch_denied" } };
+      }
       return { effectKind: effect.kind, targetType: "heartbeat_run", targetId: retryId,
         payload: { cause: effect.cause, summary: effect.summary } };
     }

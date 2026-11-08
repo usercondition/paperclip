@@ -29,6 +29,7 @@ import {
   sql,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { evaluateManagedRepairDispatch, isManagedRepairDispatchDenial } from "../managed-repair-control.js";
 import {
   agents,
   agentWakeupRequests,
@@ -978,6 +979,29 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           };
           retryContextSnapshot.explicitUserContinuation = continuation;
           retryContextSnapshot.previousRunId = continuation.previousRunId;
+        }
+
+        if (issueId) {
+          try {
+            const gate = await evaluateManagedRepairDispatch(tx as unknown as Db, {
+              companyId: run.companyId,
+              issueId,
+              source: "automatic",
+              triggerId: `retry:${run.id}:${schedule.attempt}`,
+            }, true);
+            if (gate.claimId) retryContextSnapshot.managedRepairClaimId = gate.claimId;
+          } catch (err) {
+            if (isManagedRepairDispatchDenial(err)) {
+              return {
+                outcome: "not_scheduled",
+                issueId,
+                errorCode: "managed_repair_dispatch_denied",
+                reason: "Managed repair did not authorize this automatic retry",
+                details: {},
+              };
+            }
+            throw err;
+          }
         }
 
         const wakeupRequest = await tx

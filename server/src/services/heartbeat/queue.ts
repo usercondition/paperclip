@@ -92,6 +92,12 @@ import {
   HttpError,
   notFound,
 } from "../../errors.js";
+import {
+  assertManagedRepairWake,
+  classifyManagedRepairWakeSource,
+  evaluateManagedRepairDispatch,
+  resolveManagedRepairWakeTrigger,
+} from "../managed-repair-control.js";
 import { logger } from "../../middleware/logger.js";
 import { publishLiveEvent } from "../live-events.js";
 import { allocateHeartbeatRunEventSeq } from "../heartbeat-run-events.js";
@@ -2141,6 +2147,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         if (!wakeCommentId && isWaitingConversation(conversation) && !hasInteractionContinuationWakeContext(enrichedContextSnapshot) && reason !== CHAT_COMPLETION_WAKE_REASON) return null;
       }
     }
+    if (issueId) {
+      await assertManagedRepairWake(db, { companyId: agent.companyId, issueId });
+    }
     if (agent.adapterType === "paperclip_runner") {
       const oldConfig = parseObject(agent.adapterConfig);
       const nextConfig = normalizeLegacyRunnerProvider(oldConfig);
@@ -4021,6 +4030,24 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             adoptedCommentIds = await undeliveredLegacyUserCommentIds(tx as unknown as Db,
               agent.companyId, issueId, agentId, adoptedCommentIds);
           }
+          if (issueId) {
+            const managedRepairDispatch = await evaluateManagedRepairDispatch(tx as unknown as Db, {
+              companyId: agent.companyId,
+              issueId,
+              source: classifyManagedRepairWakeSource({
+                reason,
+                contextSource: enrichedContextSnapshot.source,
+                invocationSource: source,
+              }),
+              triggerId: resolveManagedRepairWakeTrigger({
+                explicit: typeof payload?.managedRepairTriggerId === "string" ? payload.managedRepairTriggerId : null,
+                commentId: wakeCommentId,
+                idempotencyKey: opts.idempotencyKey ?? null,
+                reason,
+              }),
+            }, true);
+            if (managedRepairDispatch.claimId) enrichedContextSnapshot.managedRepairClaimId = managedRepairDispatch.claimId;
+          }
           const newRun = await tx
             .insert(heartbeatRuns)
             .values({
@@ -4296,6 +4323,24 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         .returning()
         .then((rows) => rows[0]);
 
+      if (issueId) {
+        const managedRepairDispatch = await evaluateManagedRepairDispatch(tx as unknown as Db, {
+          companyId: agent.companyId,
+          issueId,
+          source: classifyManagedRepairWakeSource({
+            reason,
+            contextSource: enrichedContextSnapshot.source,
+            invocationSource: source,
+          }),
+          triggerId: resolveManagedRepairWakeTrigger({
+            explicit: typeof payload?.managedRepairTriggerId === "string" ? payload.managedRepairTriggerId : null,
+            commentId: wakeCommentId,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            reason,
+          }),
+        }, true);
+        if (managedRepairDispatch.claimId) enrichedContextSnapshot.managedRepairClaimId = managedRepairDispatch.claimId;
+      }
       const newRun = await tx
         .insert(heartbeatRuns)
         .values({

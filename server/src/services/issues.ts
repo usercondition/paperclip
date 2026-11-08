@@ -111,6 +111,7 @@ import {
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
+import { assertManagedRepairIssueMutation } from "./managed-repair-control.js";
 import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
@@ -10947,6 +10948,15 @@ export function issueService(db: Db) {
 
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
+        if (issueData.status !== existing.status) {
+          await assertManagedRepairIssueMutation(dbOrTx, {
+            companyId: existing.companyId,
+            issueId: existing.id,
+            fromStatus: existing.status,
+            toStatus: issueData.status,
+            action: "status",
+          });
+        }
       }
 
       const patch: Partial<typeof issues.$inferInsert> = {
@@ -11777,6 +11787,13 @@ export function issueService(db: Db) {
           unresolvedBlockers,
         });
       }
+      await assertManagedRepairIssueMutation(db, {
+        companyId: issueCompany.companyId,
+        issueId: id,
+        fromStatus: "todo",
+        toStatus: "in_progress",
+        action: "checkout",
+      });
 
       const sameRunAssigneeCondition = checkoutRunId
         ? and(

@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { chatConversations, chatEndpoints, heartbeatRuns, issueComments, issues, type Db } from "@paperclipai/db";
 import { persistActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
+import { assertManagedRepairIssueMutation } from "./managed-repair-control.js";
 
 /** Both run finalization and provider publication can arrive first. Re-read
  * durable evidence under the task lock; never infer completion from prose. */
@@ -90,6 +91,13 @@ export async function settleExternalConversation(db: Db, companyId: string, issu
       .where(and(eq(chatConversations.id, binding.conversation.id), eq(chatConversations.companyId, companyId), eq(chatConversations.state, "active")))
       .returning({ id: chatConversations.id });
     if (!changed.length) return false;
+    await assertManagedRepairIssueMutation(tx as unknown as Db, {
+      companyId,
+      issueId,
+      fromStatus: issue.status,
+      toStatus: "in_review",
+      action: "status",
+    });
     await tx.update(issues).set({ status: "in_review", updatedAt: new Date() })
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
     activity = (await persistActivity(tx as unknown as Db, {

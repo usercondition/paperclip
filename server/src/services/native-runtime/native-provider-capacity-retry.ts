@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { agentWakeupRequests, heartbeatRuns, type Db } from "@paperclipai/db";
 import { accountingForScheduledRetry, executionFailureRetryCount } from "../execution-recovery-attempt.js";
+import { evaluateManagedRepairDispatch, isManagedRepairDispatchDenial } from "../managed-repair-control.js";
 import { NATIVE_PROVIDER_CAPACITY_MAX_RETRIES, NATIVE_PROVIDER_OVERLOADED_CODE, NATIVE_PROVIDER_OVERLOADED_MESSAGE } from "./native-provider-failure.js";
 
 /** Called under the finalizer's issue/coordinator locks, in the status-effect transaction. */
@@ -49,6 +50,18 @@ export async function materializeNativeProviderCapacityRetry(input: {
     scheduledRetryAt: dueAt.toISOString(),
     executionRetryAccounting: accountingForScheduledRetry(run, NATIVE_PROVIDER_OVERLOADED_CODE, attempt),
   };
+  try {
+    const gate = await evaluateManagedRepairDispatch(input.tx, {
+      companyId: input.companyId,
+      issueId: input.issueId,
+      source: "automatic",
+      triggerId: `native-capacity:${input.companyId}:${run.id}`,
+    }, true);
+    if (gate.claimId) (contextSnapshot as Record<string, unknown>).managedRepairClaimId = gate.claimId;
+  } catch (err) {
+    if (isManagedRepairDispatchDenial(err)) return null;
+    throw err;
+  }
   const [wake] = await input.tx.insert(agentWakeupRequests).values({
     companyId: run.companyId, agentId: run.agentId, source: "automation", triggerDetail: "system",
     reason: NATIVE_PROVIDER_OVERLOADED_CODE, status: "queued", runId: retryId,

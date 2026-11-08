@@ -2874,3 +2874,4 @@ export { AGENT_LIFECYCLE_STATES, type AgentLifecycleState, type AgentLifecycleOp
 export type { AgentLifecycleRequest, AgentLifecycleResult } from "./types/agent-lifecycle.js";
 
 export * from "./fast-response.js";
+export * from "./managed-repair-control.js";

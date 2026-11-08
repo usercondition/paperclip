@@ -32,6 +32,7 @@ import {
   sql,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { evaluateManagedRepairDispatch, isManagedRepairDispatchDenial } from "../managed-repair-control.js";
 import {
   hasCommittedNativeBoardResponseWait,
   readNativeBoardResponseWaitSource,
@@ -2637,7 +2638,29 @@ export function recoveryService(
 
     const now = new Date();
     const retryAt = readProviderQuotaRetryAt(input.latestRun, now);
+    const quotaContext = withRecoveryContext(
+      {
+        issueId: input.issue.id,
+        taskId: input.issue.id,
+        wakeReason: "provider_quota_recovery",
+        retryReason: "provider_quota_recovery",
+        providerQuotaRetryNotBefore: retryAt.toISOString(),
+      },
+      "normal_model",
+    );
     return db.transaction(async (tx) => {
+      try {
+        const gate = await evaluateManagedRepairDispatch(tx as unknown as Db, {
+          companyId: input.issue.companyId,
+          issueId: input.issue.id,
+          source: "automatic",
+          triggerId: `provider_quota_recovery:${input.issue.id}:${retryAt.toISOString()}`,
+        }, true);
+        if (gate.claimId) (quotaContext as Record<string, unknown>).managedRepairClaimId = gate.claimId;
+      } catch (err) {
+        if (isManagedRepairDispatchDenial(err)) return null;
+        throw err;
+      }
       const wakeup = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -2678,16 +2701,7 @@ export function recoveryService(
           scheduledRetryAt: retryAt,
           scheduledRetryAttempt: 1,
           scheduledRetryReason: "provider_quota_recovery",
-          contextSnapshot: withRecoveryContext(
-            {
-              issueId: input.issue.id,
-              taskId: input.issue.id,
-              wakeReason: "provider_quota_recovery",
-              retryReason: "provider_quota_recovery",
-              providerQuotaRetryNotBefore: retryAt.toISOString(),
-            },
-            "normal_model",
-          ),
+          contextSnapshot: quotaContext,
           updatedAt: now,
         })
         .returning()
@@ -3226,6 +3240,18 @@ export function recoveryService(
           created = Boolean(enqueuedRun);
         } else {
           scheduledRun = await db.transaction(async (tx) => {
+            try {
+              const gate = await evaluateManagedRepairDispatch(tx as unknown as Db, {
+                companyId: input.issue.companyId,
+                issueId: input.issue.id,
+                source: "automatic",
+                triggerId: `disposition_repair:${input.issue.id}:${input.fingerprint}:${input.attempt}`,
+              }, true);
+              if (gate.claimId) (context as Record<string, unknown>).managedRepairClaimId = gate.claimId;
+            } catch (err) {
+              if (isManagedRepairDispatchDenial(err)) return null;
+              throw err;
+            }
             const wakeup = await tx
               .insert(agentWakeupRequests)
               .values({

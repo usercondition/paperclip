@@ -480,6 +480,7 @@ async function promoteDeferredWake(
     authorizedFailedChatRetry: workingCandidate.authorizedFailedChatRetry,
     now: input.now,
   });
+  if (!promotedRun) return null;
 
   postCommitEffects.push({ kind: "run_queued", run: promotedRun });
   return { outcome: { kind: "promoted", run: promotedRun }, postCommitEffects };
@@ -674,6 +675,7 @@ async function runReleaseRecoveryTail(
       sessionBefore,
       now: input.now,
     });
+    if (!queuedRun) return { outcome: { kind: "released" }, postCommitEffects };
     postCommitEffects.push({ kind: "run_queued", run: queuedRun });
     return {
       outcome: { kind: "queued_review_participant_recovery", run: queuedRun },
@@ -733,6 +735,7 @@ async function runReleaseRecoveryTail(
     sessionBefore,
     now: input.now,
   });
+  if (!queuedRun) return { outcome: { kind: "released" }, postCommitEffects };
   postCommitEffects.push({ kind: "run_queued", run: queuedRun });
   return {
     outcome: { kind: "queued_recovery", run: queuedRun },

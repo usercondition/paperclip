@@ -18,6 +18,7 @@ import { issueService } from "../issues.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { buildExecutionContinuation } from "../execution-continuation.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { evaluateManagedRepairDispatch, isManagedRepairDispatchDenial } from "../managed-repair-control.js";
 
 export const NATIVE_SAFE_REPLACEMENT_REASON = "native_safe_replacement";
 const record = (v: unknown): Record<string, unknown> =>
@@ -351,6 +352,26 @@ export async function reconcileSafeNativeReplacements(
           if (!currentRun || currentRun.status !== "failed" || currentRun.runnerInstanceId !== run.runnerInstanceId ||
               currentRun.nativeSessionId !== run.nativeSessionId || currentRun.processPid || currentRun.processGroupId) return false;
         }
+        let managedRepairClaimId: string | null = null;
+        try {
+          const gate = await evaluateManagedRepairDispatch(tx as unknown as Db, {
+            companyId: run.companyId,
+            issueId: task.id,
+            source: "automatic",
+            triggerId: `native-safe-replacement:${run.id}`,
+          }, true);
+          managedRepairClaimId = gate.claimId;
+        } catch (err) {
+          if (!isManagedRepairDispatchDenial(err)) throw err;
+          await tx.update(nativeRunFinalizations).set({
+            failureDetail: {
+              ...current.failureDetail,
+              replacementDenied: "managed_repair_dispatch_denied",
+            },
+            updatedAt: now,
+          }).where(eq(nativeRunFinalizations.runId, run.id));
+          return false;
+        }
         if (task.status === "blocked") {
           // Restore only this failure's unchanged projection. The normal issue
           // service still enforces dependency readiness and assignee eligibility.
@@ -386,6 +407,7 @@ export async function reconcileSafeNativeReplacements(
           forceFreshSession: true,
           recoveryIncidentRootRunId:
             record(run.contextSnapshot).recoveryIncidentRootRunId ?? run.id,
+          ...(managedRepairClaimId ? { managedRepairClaimId } : {}),
         };
         const [wake] = await tx
           .insert(agentWakeupRequests)

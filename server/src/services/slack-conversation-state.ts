@@ -1,5 +1,6 @@
 import { chatConversations, issues, type Db } from "@paperclipai/db";
 import { and, eq, sql } from "drizzle-orm";
+import { assertManagedRepairIssueMutation } from "./managed-repair-control.js";
 
 /** Read-only projection; External chat threads do not acquire Agent Chat identities. */
 export function externalConversationStateSql() {
@@ -45,6 +46,13 @@ export function nonIdleSlackIssueCondition() {
 export async function resumeExternalConversation(tx: Db, companyId: string, issueId: string) {
   // Only the verified idle convention may leave In Review automatically.
   // A real decision or delivery problem keeps the existing review semantics.
+  await assertManagedRepairIssueMutation(tx, {
+    companyId,
+    issueId,
+    fromStatus: "in_review",
+    toStatus: "todo",
+    action: "status",
+  });
   await tx.update(issues).set({ status: "todo", updatedAt: new Date() })
     .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId),
       sql`${externalConversationStateSql()} = 'waiting'`));
