@@ -194,18 +194,20 @@ describe("managed install commands", () => {
     expect(stampedBuild?.[2]?.env?.PAPERCLIP_BUILD_COMMIT).toBe(sha);
   });
 
-  it("aligns a declared payload version before build and packs bundled packages without rerunning prepack", async () => {
+  it("builds the workspace before aligning the payload version and packs bundled packages without rerunning prepack", async () => {
     const sha = "e".repeat(40);
     const runCommand = createGitCheckoutRunCommand(sha, { payloadVersion: true });
     await expect(installGitPayload("paperclipai/paperclip", sha, runCommand, resolveInstallStorePaths())).resolves.toMatchObject({ version: "0.3.1", reused: false });
     const calls = runCommand.mock.calls.map(([file, args]) => `${file} ${(args ?? []).join(" ")}`);
     const installAt = calls.findIndex((call) => call.includes("pnpm install --frozen-lockfile"));
+    const workspaceBuildAt = calls.findIndex((call) => call.includes("--filter") && call.includes("run build"));
     const versionAt = calls.findIndex((call) => call.includes("prepare-managed-payload-versions.mjs"));
     const buildAt = calls.findIndex((call) => call.includes("scripts/build-npm.sh"));
     const skillsAt = calls.findIndex((call) => call.includes("stage-release-skills.mjs"));
     const bundledPack = calls.find((call) => call.includes("npm pack") && call.includes("workspace-package-"));
     expect(installAt).toBeGreaterThanOrEqual(0);
-    expect(versionAt).toBeGreaterThan(installAt);
+    expect(workspaceBuildAt).toBeGreaterThan(installAt);
+    expect(versionAt).toBeGreaterThan(workspaceBuildAt);
     expect(buildAt).toBeGreaterThan(versionAt);
     expect(skillsAt).toBeGreaterThan(buildAt);
     expect(bundledPack).toContain("--ignore-scripts");

@@ -80,10 +80,10 @@ mkdirSync(stagingRoot, { recursive: true });
 
 let failed = false;
 try {
-  applyManagedPayloadVersions();
   const buildEnv = { PAPERCLIP_BUILD_COMMIT: commit };
-  run("bash", ["scripts/build-npm.sh", "--skip-checks", "--skip-typecheck"], { env: buildEnv });
   run("corepack", ["pnpm", "-r", "--filter", "@paperclipai/server...", "--if-present", "run", "build"], { env: buildEnv });
+  applyManagedPayloadVersions();
+  run("bash", ["scripts/build-npm.sh", "--skip-checks", "--skip-typecheck"], { env: buildEnv });
   run(process.execPath, ["scripts/stage-release-skills.mjs"]);
   run("bash", ["scripts/prepare-server-ui-dist.sh"], { env: { PAPERCLIP_RELEASE_REUSE_UI_DIST: "1" } });
 
@@ -136,6 +136,15 @@ try {
   }
   if (!tarballHas(join(outputDir, server.name), "package/skills/paperclip/SKILL.md")) {
     throw new Error("Server package is missing the staged repo skills tree.");
+  }
+  const shared = manifests.find((entry) => entry.manifest.name === "@paperclipai/shared");
+  if (!shared) throw new Error("The packed set is missing @paperclipai/shared.");
+  const sharedControl = execFileSync("tar", ["-xOf", join(outputDir, shared.name), "package/dist/managed-repair-control.js"], {
+    encoding: "utf8",
+    maxBuffer: 2_000_000,
+  });
+  if (!sharedControl.includes("managedRepairResultChecksum")) {
+    throw new Error("Packed @paperclipai/shared dist does not include the managed-repair checksum.");
   }
   const sums = manifests.map((entry) => {
     const bytes = readFileSync(join(outputDir, entry.name));
