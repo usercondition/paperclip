@@ -16,6 +16,7 @@ import {
 } from "@paperclipai/db";
 import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
 import { conflict } from "../errors.js";
+import { assertManagedRepairIssueMutation } from "./managed-repair-control.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { authorizationService, type AuthorizationActor, type AuthorizationResource } from "./authorization.js";
 import { ensureHumanRoleDefaultGrants } from "./principal-access-compatibility.js";
@@ -692,6 +693,19 @@ export function accessService(db: Db) {
         eq(issues.assigneeUserId, existing.principalId),
         sql`${issues.status} not in ('done', 'cancelled')`,
       );
+      const inProgressRows = await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(assignedOpenIssueWhere, eq(issues.status, "in_progress")));
+      for (const row of inProgressRows) {
+        await assertManagedRepairIssueMutation(tx as unknown as Db, {
+          companyId,
+          issueId: row.id,
+          fromStatus: "in_progress",
+          toStatus: "todo",
+          action: "status",
+        });
+      }
       const resetInProgress = await tx
         .update(issues)
         .set({

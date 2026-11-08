@@ -13,6 +13,7 @@ import {
   chatActions,
   heartbeatRuns,
   issueComments,
+  issueManagedRepairs,
   issueRecoveryActions,
   issueRelations,
   issues,
@@ -31,6 +32,7 @@ import { issueTreeControlService, isVerifiedIssueTreeControlInteractionWake } fr
 import { isAutomaticRecoverySuppressedByPauseHold } from "../../../services/recovery/pause-hold-guard.js";
 import { classifyContinuationFailure } from "../../../services/recovery/service.js";
 import { issueService } from "../../../services/issues.js";
+import { evaluateManagedRepairDispatch, isManagedRepairDispatchDenial } from "../../../services/managed-repair-control.js";
 import { issueRecoveryActionService } from "../../../services/issue-recovery-actions.js";
 import { readContinuationAttempt } from "../../../services/recovery/run-liveness-continuations.js";
 import { withRecoveryContext } from "../../../services/recovery/status-only-context.js";
@@ -64,6 +66,25 @@ import type {
   WakeQueueTransaction,
 } from "../application/ports.js";
 import type { RunSummary } from "../application/types.js";
+
+async function admitManagedRepairAutomaticRun(
+  tx: Db,
+  input: { companyId: string; issueId: string; triggerId: string; contextSnapshot: Record<string, unknown> },
+): Promise<"ok" | "denied"> {
+  try {
+    const gate = await evaluateManagedRepairDispatch(tx, {
+      companyId: input.companyId,
+      issueId: input.issueId,
+      source: "automatic",
+      triggerId: input.triggerId,
+    }, true);
+    if (gate.claimId) input.contextSnapshot.managedRepairClaimId = gate.claimId;
+    return "ok";
+  } catch (err) {
+    if (isManagedRepairDispatchDenial(err)) return "denied";
+    throw err;
+  }
+}
 
 const DEFERRED_WAKE_STATUS = "deferred_issue_execution";
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
@@ -423,6 +444,15 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       return updated ? toIssueSnapshot(updated as unknown as IssueRow) : null;
     },
 
+    async isEnrolledManagedRepair({ companyId, issueId }) {
+      const [row] = await tx
+        .select({ enrolled: issueManagedRepairs.enrolled })
+        .from(issueManagedRepairs)
+        .where(and(eq(issueManagedRepairs.companyId, companyId), eq(issueManagedRepairs.issueId, issueId)))
+        .limit(1);
+      return row?.enrolled === true;
+    },
+
     async claimDeferredWakeForPromotion({ companyId, wakeId, now }) {
       const claimed = await tx
         .update(agentWakeupRequests)
@@ -446,6 +476,28 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
     },
 
     async finalizePromotedWake(input) {
+      const admitted = await admitManagedRepairAutomaticRun(tx, {
+        companyId: input.companyId,
+        issueId: input.issue.id,
+        triggerId: `promote:${input.wakeId}`,
+        contextSnapshot: input.contextSnapshot,
+      });
+      if (admitted === "denied") {
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: "cancelled",
+            finishedAt: input.now,
+            error: "managed_repair_dispatch_denied",
+            updatedAt: input.now,
+          })
+          .where(and(
+            eq(agentWakeupRequests.id, input.wakeId),
+            eq(agentWakeupRequests.companyId, input.companyId),
+            isNull(agentWakeupRequests.runId),
+          ));
+        return null;
+      }
       const newRun = await tx
         .insert(heartbeatRuns)
         .values({
@@ -576,6 +628,28 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
 
     async queueReviewParticipantRecoveryRun({ companyId, issue, finishingRun, recoveryAgent, sessionBefore, now }) {
       const executionState = parseIssueExecutionState(issue.executionState);
+      const contextSnapshot = withRecoveryContext(
+        {
+          issueId: issue.id,
+          taskId: issue.id,
+          wakeReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
+          retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
+          source: "issue.execution_review_recovery",
+          retryOfRunId: finishingRun.id,
+          currentStageId: executionState?.currentStageId ?? null,
+          currentStageType: executionState?.currentStageType ?? null,
+          reviewRecoveryInstruction:
+            "The previous reviewer run ended while this execution-review stage was still pending. Submit the review decision now, or mark the issue blocked with the exact unblock action.",
+        },
+        "normal_model",
+      );
+      const admitted = await admitManagedRepairAutomaticRun(tx, {
+        companyId,
+        issueId: issue.id,
+        triggerId: `review_recovery:${finishingRun.id}`,
+        contextSnapshot,
+      });
+      if (admitted === "denied") return null;
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -611,21 +685,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
           triggerDetail: "system",
           status: "queued",
           wakeupRequestId: wakeupRequest.id,
-          contextSnapshot: withRecoveryContext(
-            {
-              issueId: issue.id,
-              taskId: issue.id,
-              wakeReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
-              retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
-              source: "issue.execution_review_recovery",
-              retryOfRunId: finishingRun.id,
-              currentStageId: executionState?.currentStageId ?? null,
-              currentStageType: executionState?.currentStageType ?? null,
-              reviewRecoveryInstruction:
-                "The previous reviewer run ended while this execution-review stage was still pending. Submit the review decision now, or mark the issue blocked with the exact unblock action.",
-            },
-            "normal_model",
-          ),
+          contextSnapshot,
           sessionIdBefore: sessionBefore,
           retryOfRunId: finishingRun.id,
           updatedAt: now,
@@ -662,6 +722,13 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       sessionBefore,
       now,
     }) {
+      const admitted = await admitManagedRepairAutomaticRun(tx, {
+        companyId,
+        issueId: issue.id,
+        triggerId: `immediate_recovery:${finishingRun.id}:${reason}`,
+        contextSnapshot,
+      });
+      if (admitted === "denied") return null;
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -724,6 +791,16 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: HeartbeatRunRow
     issue.assigneeAgentId === run.agentId &&
     !["done", "cancelled"].includes(issue.status);
   if (!applies || isAcknowledgedNativeStop(run) || isAcknowledgedNativeReassignmentStop(run)) return false;
+  if (run.status === "cancelled" || run.status === "interrupted") {
+    const [repair] = await tx
+      .select({ enrolled: issueManagedRepairs.enrolled })
+      .from(issueManagedRepairs)
+      .where(and(eq(issueManagedRepairs.companyId, issue.companyId), eq(issueManagedRepairs.issueId, issue.id)))
+      .limit(1);
+    // Board cancel and interrupt must not project the task to blocked.
+    // The drain then retires a deferred wake instead of promoting it.
+    if (repair?.enrolled) return false;
+  }
 
   const existing = await tx
     .select({ id: issueRecoveryActions.id, evidence: issueRecoveryActions.evidence })

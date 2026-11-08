@@ -117,6 +117,7 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
     getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: false })),
     isCompletedDelegationMention: vi.fn(async () => false),
     reopenIssue: vi.fn(async () => null),
+    isEnrolledManagedRepair: vi.fn(async () => false),
     claimDeferredWakeForPromotion: vi.fn(async () => true),
     finalizePromotedWake: vi.fn(async (input) => runSummary(input.wakeId)),
     hasExistingExecutionPath: vi.fn(async () => false),

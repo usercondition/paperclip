@@ -18,6 +18,7 @@ import {
 } from "@paperclipai/db";
 
 import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
+import { assertManagedRepairIssueMutation } from "./managed-repair-control.js";
 
 export type ConversationIdentity = {
   conversationAgentId?: string | null;
@@ -256,6 +257,13 @@ export async function prepareConversationTurn(
         context.conversationReplayThroughCommentId = replayThrough?.id ?? commentId;
       }
     }
+    await assertManagedRepairIssueMutation(tx as unknown as Db, {
+      companyId: issue.companyId,
+      issueId: issue.id,
+      fromStatus: issue.status,
+      toStatus: "in_progress",
+      action: "status",
+    });
     await tx
       .update(issues)
       .set({

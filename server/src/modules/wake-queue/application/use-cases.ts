@@ -328,8 +328,29 @@ async function promoteDeferredWake(
   input: ReleaseIssueExecutionInput,
 ): Promise<ReleaseTransactionResult | null> {
   let currentIssue = issue;
+  const enrolledManagedRepair = await ports.transaction.isEnrolledManagedRepair({
+    companyId: run.companyId,
+    issueId: currentIssue.id,
+  });
+  // Board cancel writes the run's cancelled status before the issue status.
+  // A deferred comment must not become a successor, and a terminal managed
+  // repair must not reopen to todo before the dispatch gate. A hold does not
+  // undo side effects the finishing run already performed.
+  if (
+    enrolledManagedRepair &&
+    (run.status === "cancelled" || run.status === "interrupted" || currentIssue.status === "done" || currentIssue.status === "cancelled")
+  ) {
+    await ports.transaction.cancelDeferredWake({
+      companyId: run.companyId,
+      wakeId: workingCandidate.id,
+      reason: "Managed repair does not resume a deferred wake after stop or completion",
+      now: input.now,
+    });
+    return null;
+  }
   let shouldReopen = false;
   if (
+    !enrolledManagedRepair &&
     !workingCandidate.authorizedFailedChatRetry &&
     workingCandidate.deferredCommentIds.length > 0 &&
     (currentIssue.status === "done" || currentIssue.status === "cancelled")
@@ -480,6 +501,7 @@ async function promoteDeferredWake(
     authorizedFailedChatRetry: workingCandidate.authorizedFailedChatRetry,
     now: input.now,
   });
+  if (!promotedRun) return null;
 
   postCommitEffects.push({ kind: "run_queued", run: promotedRun });
   return { outcome: { kind: "promoted", run: promotedRun }, postCommitEffects };
@@ -645,6 +667,16 @@ async function runReleaseRecoveryTail(
     );
 
   if (run.conversationContinuation && ["failed", "timed_out", "interrupted"].includes(run.status)) {
+    const enrolledInterrupted = run.status === "interrupted" && await transaction.isEnrolledManagedRepair({
+      companyId: run.companyId,
+      issueId: issue.id,
+    });
+    // An interrupted managed repair needs a new board grant. Do not ask the
+    // host to schedule a conversation successor, and do not fall through into
+    // another recovery run for the grant that just ended.
+    if (enrolledInterrupted) {
+      return { outcome: { kind: "released" }, postCommitEffects };
+    }
     // Do not create an uncounted immediate successor inside the issue lock.
     // The host's idempotent scheduler claims it after commit with the same
     // retry counter used by restart and process-loss recovery.
@@ -674,6 +706,7 @@ async function runReleaseRecoveryTail(
       sessionBefore,
       now: input.now,
     });
+    if (!queuedRun) return { outcome: { kind: "released" }, postCommitEffects };
     postCommitEffects.push({ kind: "run_queued", run: queuedRun });
     return {
       outcome: { kind: "queued_review_participant_recovery", run: queuedRun },
@@ -733,6 +766,7 @@ async function runReleaseRecoveryTail(
     sessionBefore,
     now: input.now,
   });
+  if (!queuedRun) return { outcome: { kind: "released" }, postCommitEffects };
   postCommitEffects.push({ kind: "run_queued", run: queuedRun });
   return {
     outcome: { kind: "queued_recovery", run: queuedRun },

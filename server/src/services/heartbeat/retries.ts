@@ -29,11 +29,13 @@ import {
   sql,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { evaluateManagedRepairDispatch, isManagedRepairDispatchDenial } from "../managed-repair-control.js";
 import {
   agents,
   agentWakeupRequests,
   executionWorkspaces,
   heartbeatRuns,
+  issueManagedRepairs,
   issues,
 } from "@paperclipai/db";
 import {
@@ -687,7 +689,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             | "issue_terminal_status"
             | "issue_not_in_progress"
             | "continuation_user_authorization_missing"
-            | "issue_execution_lock_changed";
+            | "issue_execution_lock_changed"
+            | "managed_repair_dispatch_denied";
           issueId: string | null;
           details: Record<string, unknown>;
         };
@@ -978,6 +981,49 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           };
           retryContextSnapshot.explicitUserContinuation = continuation;
           retryContextSnapshot.previousRunId = continuation.previousRunId;
+        }
+
+        if (issueId && run.status === "interrupted") {
+          const [repair] = await tx
+            .select({ enrolled: issueManagedRepairs.enrolled })
+            .from(issueManagedRepairs)
+            .where(and(
+              eq(issueManagedRepairs.companyId, run.companyId),
+              eq(issueManagedRepairs.issueId, issueId),
+            ))
+            .limit(1);
+          if (repair?.enrolled) {
+            return {
+              outcome: "not_scheduled",
+              issueId,
+              errorCode: "managed_repair_dispatch_denied",
+              reason: "An interrupted managed repair does not schedule its own successor",
+              details: {},
+            };
+          }
+        }
+
+        if (issueId) {
+          try {
+            const gate = await evaluateManagedRepairDispatch(tx as unknown as Db, {
+              companyId: run.companyId,
+              issueId,
+              source: "automatic",
+              triggerId: `retry:${run.id}:${schedule.attempt}`,
+            }, true);
+            if (gate.claimId) retryContextSnapshot.managedRepairClaimId = gate.claimId;
+          } catch (err) {
+            if (isManagedRepairDispatchDenial(err)) {
+              return {
+                outcome: "not_scheduled",
+                issueId,
+                errorCode: "managed_repair_dispatch_denied",
+                reason: "Managed repair did not authorize this automatic retry",
+                details: {},
+              };
+            }
+            throw err;
+          }
         }
 
         const wakeupRequest = await tx

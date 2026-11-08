@@ -1,7 +1,8 @@
 import { hasRequiredWorkspaceRecovery, preserveWorkspaceRestoreRecoveryMetadata, LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
 import { hasUnrestoredRemoteWorkspace, preserveLegacyWorkspaceRestoreSources, type LegacyWorkspaceRestoreSource } from "./legacy-workspace-restore-recovery.js";
 import { isPreDispatchReviewWaitVerified } from "./pre-dispatch-review-wait.js";
-import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
+import { hasWorkspaceRestoreFailure, managedRepairTerminalHaltAction } from "@paperclipai/shared";
+import { noteManagedRepairRunFailure, noteManagedRepairRunInterruption } from "./managed-repair-control.js";
 import { normalizeMaxTurnStopReason } from "./heartbeat-stop-metadata.js";
 import { claimedAdapterType, hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { randomUUID } from "node:crypto";
@@ -123,6 +124,13 @@ export async function terminalizeLegacyExecution(input: {
       )
       .returning();
     if (!updated) return null;
+    if (!input.recordRestoreFailureOnly && current.status !== status) {
+      if (managedRepairTerminalHaltAction(status) === "halt") {
+        await noteManagedRepairRunFailure(tx as unknown as Db, updated);
+      } else if (status === "interrupted") {
+        await noteManagedRepairRunInterruption(tx as unknown as Db, updated);
+      }
+    }
     const retainedLeaseIds = await preserveLegacyWorkspaceRestoreSources(tx as unknown as Db,
       input.recordRestoreFailureOnly ? { ...updated, status: "failed" } : updated, input.workspaceRestoreSource);
     if (retainedLeaseIds.length) {

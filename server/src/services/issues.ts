@@ -111,6 +111,7 @@ import {
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
+import { assertManagedRepairIssueMutation } from "./managed-repair-control.js";
 import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
@@ -10834,6 +10835,7 @@ export function issueService(db: Db) {
         actorRunId?: string | null;
         actorRunStopId?: string | null;
         actorUserId?: string | null;
+        boardHumanStop?: boolean;
         companyGuard?: string;
         expectedExecutionPolicy?: typeof issues.$inferInsert.executionPolicy;
       },
@@ -10884,6 +10886,7 @@ export function issueService(db: Db) {
         actorUserId,
         companyGuard,
         expectedExecutionPolicy,
+        boardHumanStop,
         ...issueData
       } = data;
       // An explicit edit claims the title, even if it keeps the same text.
@@ -10947,6 +10950,16 @@ export function issueService(db: Db) {
 
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
+        if (issueData.status !== existing.status) {
+          await assertManagedRepairIssueMutation(dbOrTx, {
+            companyId: existing.companyId,
+            issueId: existing.id,
+            fromStatus: existing.status,
+            toStatus: issueData.status,
+            action: "status",
+            humanStop: boardHumanStop === true && issueData.status === "cancelled",
+          });
+        }
       }
 
       const patch: Partial<typeof issues.$inferInsert> = {
@@ -11777,6 +11790,13 @@ export function issueService(db: Db) {
           unresolvedBlockers,
         });
       }
+      await assertManagedRepairIssueMutation(db, {
+        companyId: issueCompany.companyId,
+        issueId: id,
+        fromStatus: "todo",
+        toStatus: "in_progress",
+        action: "checkout",
+      });
 
       const sameRunAssigneeCondition = checkoutRunId
         ? and(

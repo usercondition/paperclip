@@ -105,7 +105,7 @@ describe("managed install commands", () => {
     expect(runCommand.mock.calls[0]?.[0]).toBe(process.execPath);
   });
 
-  const createGitCheckoutRunCommand = (sha: string) =>
+  const createGitCheckoutRunCommand = (sha: string, options?: { payloadVersion?: boolean }) =>
     vi.fn(async (file: string, args: string[], _options?: Parameters<CommandRunner>[2]) => {
       if (file === "curl" && !args.includes("--output")) return { stdout: JSON.stringify({ sha }), stderr: "" };
       if (file === "curl") { fs.writeFileSync(args[args.indexOf("--output") + 1], "archive"); return { stdout: "", stderr: "" }; }
@@ -120,6 +120,10 @@ describe("managed install commands", () => {
         fs.writeFileSync(path.join(checkout, "cli", "package.json"), JSON.stringify({ version: "0.3.1" }));
         fs.mkdirSync(path.join(checkout, "scripts"), { recursive: true });
         fs.writeFileSync(path.join(checkout, "scripts", "release-package-manifest.json"), JSON.stringify(packages.map(({ dir, name }) => ({ dir, name }))));
+        if (options?.payloadVersion) {
+          fs.writeFileSync(path.join(checkout, "scripts", "managed-payload-version.json"), JSON.stringify({ version: "2026.1012.1-managed.1" }));
+          fs.writeFileSync(path.join(checkout, "scripts", "stage-release-skills.mjs"), "");
+        }
         for (const workspacePackage of packages) {
           fs.mkdirSync(path.join(checkout, workspacePackage.dir), { recursive: true });
           fs.writeFileSync(path.join(checkout, workspacePackage.dir, "package.json"), JSON.stringify(workspacePackage.packageJson));
@@ -186,6 +190,27 @@ describe("managed install commands", () => {
     }
     const uiPackCall = buildCalls.find(([file, , options]) => file === "corepack" && options?.env?.PAPERCLIP_RELEASE_REUSE_UI_DIST === "1");
     expect(uiPackCall).toBeDefined();
+    const stampedBuild = buildCalls.find(([file, args]) => file === "bash" && args[0] === "scripts/build-npm.sh");
+    expect(stampedBuild?.[2]?.env?.PAPERCLIP_BUILD_COMMIT).toBe(sha);
+  });
+
+  it("builds the workspace before aligning the payload version and packs bundled packages without rerunning prepack", async () => {
+    const sha = "e".repeat(40);
+    const runCommand = createGitCheckoutRunCommand(sha, { payloadVersion: true });
+    await expect(installGitPayload("paperclipai/paperclip", sha, runCommand, resolveInstallStorePaths())).resolves.toMatchObject({ version: "0.3.1", reused: false });
+    const calls = runCommand.mock.calls.map(([file, args]) => `${file} ${(args ?? []).join(" ")}`);
+    const installAt = calls.findIndex((call) => call.includes("pnpm install --frozen-lockfile"));
+    const workspaceBuildAt = calls.findIndex((call) => call.includes("--filter") && call.includes("run build"));
+    const versionAt = calls.findIndex((call) => call.includes("prepare-managed-payload-versions.mjs"));
+    const buildAt = calls.findIndex((call) => call.includes("scripts/build-npm.sh"));
+    const skillsAt = calls.findIndex((call) => call.includes("stage-release-skills.mjs"));
+    const bundledPack = calls.find((call) => call.includes("npm pack") && call.includes("workspace-package-"));
+    expect(installAt).toBeGreaterThanOrEqual(0);
+    expect(workspaceBuildAt).toBeGreaterThan(installAt);
+    expect(versionAt).toBeGreaterThan(workspaceBuildAt);
+    expect(buildAt).toBeGreaterThan(versionAt);
+    expect(skillsAt).toBeGreaterThan(buildAt);
+    expect(bundledPack).toContain("--ignore-scripts");
   });
 
   it("resolves the complete server workspace dependency closure in dependency order", () => {

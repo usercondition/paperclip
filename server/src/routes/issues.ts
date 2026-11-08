@@ -296,6 +296,7 @@ import {
   readAcceptedPlanConfirmationTarget,
   type IssuePostCommitAction,
 } from "../services/issues.js";
+import { previewManagedRepairIssueMutation } from "../services/managed-repair-control.js";
 import {
   authorizationDeniedDetails,
   issueReadSqlCondition,
@@ -13627,6 +13628,7 @@ export function issueRoutes(
         hiddenAt: hiddenAtRaw,
         expectedExecutionPolicy,
         onBehalfOfUserId: _requestedOnBehalfOfUserId,
+        boardHumanStop: _clientBoardHumanStop,
         ...updateFields
       } = req.body;
     if (req.body.visibility === "private" && !existing.projectId && updateFields.projectId === undefined) {
@@ -13941,7 +13943,14 @@ export function issueRoutes(
         (isClosed ||
           (isBlocked && !hasUnresolvedFirstClassBlockers) ||
           shouldResumeInProgressScheduledRetry) &&
-        updateFields.status === undefined
+        updateFields.status === undefined &&
+        (await previewManagedRepairIssueMutation(db, {
+          companyId: existing.companyId,
+          issueId: existing.id,
+          fromStatus: existing.status,
+          toStatus: "todo",
+          action: "status",
+        })).allowed
       ) {
         updateFields.status = "todo";
       }
@@ -14357,6 +14366,7 @@ export function issueRoutes(
         actorRunId: actor.agentId ? actor.runId : null,
         actorRunStopId: actor.agentId && interruptedRunId === actor.runId ? issueMutationStopId : null,
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        boardHumanStop: req.actor.type === "board" && updateFields.status === "cancelled",
       };
       const shouldCollectCompletionPublication =
         actor.actorType === "user" &&
@@ -18367,7 +18377,14 @@ export function issueRoutes(
         effectiveMoveToTodoRequested &&
         (isClosed ||
           (isBlocked && !hasUnresolvedFirstClassBlockers) ||
-          shouldResumeInProgressScheduledRetry)
+          shouldResumeInProgressScheduledRetry) &&
+        (await previewManagedRepairIssueMutation(db, {
+          companyId: issue.companyId,
+          issueId: issue.id,
+          fromStatus: issue.status,
+          toStatus: "todo",
+          action: "status",
+        })).allowed
       ) {
         scheduledRetrySupersededByComment =
           shouldResumeInProgressScheduledRetry &&

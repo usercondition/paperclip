@@ -2332,6 +2332,13 @@
       "when": 1791807836288,
       "tag": "0334_rare_slipstream",
       "breakpoints": true
+    },
+    {
+      "idx": 335,
+      "version": "7",
+      "when": 1794119147804,
+      "tag": "0335_unusual_wolf_cub",
+      "breakpoints": true
     }
   ]
 }

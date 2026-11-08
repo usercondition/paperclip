@@ -167,6 +167,7 @@ export interface WakeQueueTransaction {
     commentIds: string[];
   }): Promise<boolean>;
   reopenIssue(input: { companyId: string; issueId: string; runId: string }): Promise<IssueSnapshot | null>;
+  isEnrolledManagedRepair(input: { companyId: string; issueId: string }): Promise<boolean>;
   /** Verifies a Done onboarding parent's completion wake against its own completed children. */
   isCompletedOnboardingHandoffWake(input: { companyId: string; issueId: string; agentId: string;
     reason: string | null; contextSnapshot: Record<string, unknown> }): Promise<boolean>;
@@ -183,7 +184,7 @@ export interface WakeQueueTransaction {
    * inserts the queued run, links it back onto the wake row, and takes the
    * issue's execution lock. Call only after that claim returns `true`.
    */
-  finalizePromotedWake(input: PromoteDeferredWakeInput): Promise<RunSummary>;
+  finalizePromotedWake(input: PromoteDeferredWakeInput): Promise<RunSummary | null>;
   /** An open run already on this issue (optionally scoped to one agent) that would race a new recovery run. */
   hasExistingExecutionPath(input: {
     companyId: string;
@@ -203,7 +204,7 @@ export interface WakeQueueTransaction {
     recoveryAgent: InvokableAgentSnapshot;
     sessionBefore: string | null;
     now: Date;
-  }): Promise<RunSummary>;
+  }): Promise<RunSummary | null>;
   /**
    * Queues the run with the context snapshot and the responsible user the
    * caller already resolved.
@@ -219,7 +220,7 @@ export interface WakeQueueTransaction {
     responsibleUserId: string;
     sessionBefore: string | null;
     now: Date;
-  }): Promise<RunSummary>;
+  }): Promise<RunSummary | null>;
 }
 
 /**

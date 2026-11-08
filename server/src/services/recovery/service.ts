@@ -32,6 +32,7 @@ import {
   sql,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { evaluateManagedRepairDispatch, isManagedRepairDispatchDenial } from "../managed-repair-control.js";
 import {
   hasCommittedNativeBoardResponseWait,
   readNativeBoardResponseWaitSource,
@@ -1894,6 +1895,34 @@ export function recoveryService(
     return Boolean(comment || attachment);
   }
 
+  // A managed-repair denial is the gate working. Automatic recovery must not
+  // turn that denial into a successor run, and it must not fail the sweep:
+  // startup awaits this sweep, and a held assigned issue has to leave the
+  // server able to start. Any other error still propagates.
+  async function enqueueAutomaticRecoveryWake(
+    agentId: string,
+    issueId: string,
+    opts: RecoveryWakeupOptions,
+  ) {
+    try {
+      return await deps.enqueueWakeup(agentId, opts);
+    } catch (err) {
+      if (!isManagedRepairDispatchDenial(err)) throw err;
+      const details = err && typeof err === "object" && "details" in err
+        ? (err as { details?: { code?: unknown } }).details
+        : undefined;
+      logger.warn(
+        {
+          issueId,
+          agentId,
+          code: typeof details?.code === "string" ? details.code : "managed_repair_denied",
+        },
+        "stranded-issue recovery left a managed repair unwoken because dispatch is denied",
+      );
+      return null;
+    }
+  }
+
   async function enqueueStrandedIssueRecovery(input: {
     issueId: string;
     agentId: string;
@@ -1984,7 +2013,7 @@ export function recoveryService(
       )
         return null;
     }
-    const queued = await deps.enqueueWakeup(input.agentId, {
+    const queued = await enqueueAutomaticRecoveryWake(input.agentId, input.issueId, {
       source: "automation",
       triggerDetail: "system",
       reason: input.reason,
@@ -2042,7 +2071,7 @@ export function recoveryService(
     issue: typeof issues.$inferSelect,
     agentId: string,
   ) {
-    return deps.enqueueWakeup(agentId, {
+    return enqueueAutomaticRecoveryWake(agentId, issue.id, {
       source: "assignment",
       triggerDetail: "system",
       reason: "issue_assigned",
@@ -2218,7 +2247,7 @@ export function recoveryService(
         },
       });
 
-      const queued = await deps.enqueueWakeup(creatorAgent.id, {
+      const queued = await enqueueAutomaticRecoveryWake(creatorAgent.id, candidate.id, {
         source: "automation",
         triggerDetail: "system",
         reason: "issue_assigned",
@@ -2637,7 +2666,29 @@ export function recoveryService(
 
     const now = new Date();
     const retryAt = readProviderQuotaRetryAt(input.latestRun, now);
+    const quotaContext = withRecoveryContext(
+      {
+        issueId: input.issue.id,
+        taskId: input.issue.id,
+        wakeReason: "provider_quota_recovery",
+        retryReason: "provider_quota_recovery",
+        providerQuotaRetryNotBefore: retryAt.toISOString(),
+      },
+      "normal_model",
+    );
     return db.transaction(async (tx) => {
+      try {
+        const gate = await evaluateManagedRepairDispatch(tx as unknown as Db, {
+          companyId: input.issue.companyId,
+          issueId: input.issue.id,
+          source: "automatic",
+          triggerId: `provider_quota_recovery:${input.issue.id}:${retryAt.toISOString()}`,
+        }, true);
+        if (gate.claimId) (quotaContext as Record<string, unknown>).managedRepairClaimId = gate.claimId;
+      } catch (err) {
+        if (isManagedRepairDispatchDenial(err)) return null;
+        throw err;
+      }
       const wakeup = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -2678,16 +2729,7 @@ export function recoveryService(
           scheduledRetryAt: retryAt,
           scheduledRetryAttempt: 1,
           scheduledRetryReason: "provider_quota_recovery",
-          contextSnapshot: withRecoveryContext(
-            {
-              issueId: input.issue.id,
-              taskId: input.issue.id,
-              wakeReason: "provider_quota_recovery",
-              retryReason: "provider_quota_recovery",
-              providerQuotaRetryNotBefore: retryAt.toISOString(),
-            },
-            "normal_model",
-          ),
+          contextSnapshot: quotaContext,
           updatedAt: now,
         })
         .returning()
@@ -3225,7 +3267,19 @@ export function recoveryService(
           scheduledRun = enqueuedRun ?? (await findScheduledRun());
           created = Boolean(enqueuedRun);
         } else {
-          scheduledRun = await db.transaction(async (tx) => {
+          const repairedRun = await db.transaction(async (tx) => {
+            try {
+              const gate = await evaluateManagedRepairDispatch(tx as unknown as Db, {
+                companyId: input.issue.companyId,
+                issueId: input.issue.id,
+                source: "automatic",
+                triggerId: `disposition_repair:${input.issue.id}:${input.fingerprint}:${input.attempt}`,
+              }, true);
+              if (gate.claimId) (context as Record<string, unknown>).managedRepairClaimId = gate.claimId;
+            } catch (err) {
+              if (isManagedRepairDispatchDenial(err)) return null;
+              throw err;
+            }
             const wakeup = await tx
               .insert(agentWakeupRequests)
               .values({
@@ -3278,6 +3332,8 @@ export function recoveryService(
               .where(eq(agentWakeupRequests.id, wakeup.id));
             return run;
           });
+          if (!repairedRun) return null;
+          scheduledRun = repairedRun;
           created = true;
         }
       } catch (error) {
@@ -4439,7 +4495,8 @@ export function recoveryService(
         }
         if (!(await instanceSettingsService(db).getExperimental()).enableAgentChat) { result.skipped += 1; continue; }
         {
-          await deliverConversationComments(db, issue, deps.enqueueWakeup);
+          await deliverConversationComments(db, issue, (agentId, opts) =>
+            enqueueAutomaticRecoveryWake(agentId, issue.id, opts));
         }
       }
       if (isWaitingConversation(issue)) { result.skipped += 1; continue; }

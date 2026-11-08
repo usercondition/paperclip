@@ -48,6 +48,7 @@ import {
   terminalizeLegacyExecution,
 } from "../legacy-execution-recovery.js";
 import { logger } from "../../middleware/logger.js";
+import { dispatchIdleManagedRepairNextSteps } from "../managed-repair-control.js";
 import { failRunnerGoalAction } from "../runner-goals.js";
 import { evaluateAgentInvokability } from "../agent-invokability.js";
 import type { Db } from "@paperclipai/db";
@@ -1231,11 +1232,12 @@ export function createHeartbeatScheduling(
       }
 
       const issueMonitors = await tickDueIssueMonitors(now);
+      const idleNextSteps = await dispatchIdleManagedRepairNextSteps(db, enqueueWakeup, now);
 
       return {
-        checked: checked + issueMonitors.checked,
-        enqueued: enqueued + issueMonitors.triggered,
-        skipped: skipped + issueMonitors.skipped,
+        checked: checked + issueMonitors.checked + idleNextSteps.scanned,
+        enqueued: enqueued + issueMonitors.triggered + idleNextSteps.enqueued,
+        skipped: skipped + issueMonitors.skipped + idleNextSteps.skipped,
       };
     }
 
